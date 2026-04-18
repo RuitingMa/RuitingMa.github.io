@@ -1,0 +1,88 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import ParticleSketch from '../../components/ParticleSketch.astro';
+---
+
+<BaseLayout title="Flow Field">
+  <ParticleSketch slot="stage" />
+
+  <article class="tint-mist">
+    <p class="breadcrumb enter" style="--i: 0;"><a href="/" class="writ">← 眠海</a></p>
+
+    <h1 class="enter" style="--i: 1;">Flow Field</h1>
+    <p class="meta enter" style="--i: 2;">2026-04-18 · GENERATIVE</p>
+
+    <p class="enter" style="--i: 3;">
+      每一点沿 <span class="cue">VALUE-NOISE</span> 场的局部方向漂移，留下尾迹。
+    </p>
+    <p class="note enter" style="--i: 4;">
+      没有任何 NPM 依赖，只用 Canvas 2D 和 <code>requestAnimationFrame</code>。这是新站点的胎动，主要目的是打通"Markdown 描述 + 嵌入 sketch"的闭环。
+    </p>
+  </article>
+</BaseLayout>
+
+<style>
+  .breadcrumb {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.25em;
+    opacity: 0.55;
+    font-size: 0.72rem;
+    margin: 0 0 4em;
+  }
+  .breadcrumb a {
+    text-decoration: none;
+  }
+  .breadcrumb a:hover {
+    color: var(--accent);
+  }
+  h1 {
+    font-family: var(--font-display);
+    font-size: 2.1rem;
+    font-weight: 400;
+    letter-spacing: 0.05em;
+    margin: 0 0 0.5em;
+    position: relative;
+    padding-left: 0.7em;
+    line-height: 1.25;
+  }
+  h1::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0.18em;
+    bottom: 0.22em;
+    width: 3px;
+    background: var(--accent);
+  }
+  .meta {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.25em;
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+    margin: 0 0 3em;
+  }
+  .cue {
+    font-family: var(--font-mono);
+    font-size: 0.82em;
+    letter-spacing: 0.08em;
+    padding: 0.14em 0.5em;
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    color: var(--accent);
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+  .note {
+    color: var(--fg-dim);
+    font-size: 0.92rem;
+  }
+  code {
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    padding: 0.1em 0.35em;
+    background: rgba(230, 226, 214, 0.08);
+    border-radius: 2px;
+  }
+</style>

@@ -1,0 +1,43 @@
+/*
+ * Dev-only font declarations.
+ *
+ * Linked from BaseLayout ONLY when `import.meta.env.DEV` is true, so this
+ * file is never loaded in production. The prod path uses per-page
+ * @font-face blocks injected by the font-subset integration.
+ *
+ * The referenced WOFF2 files are produced by:
+ *     python scripts/build-fonts.py dev
+ * Run that once after cloning, and whenever the source TTFs change.
+ */
+
+@font-face {
+  font-family: 'Huiwen Mincho';
+  src: url('/fonts/dev/mincho.woff2') format('woff2');
+  font-display: optional;
+  font-weight: 400;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Huiwen Kaiti';
+  src: url('/fonts/dev/kaiti.woff2') format('woff2');
+  font-display: optional;
+  font-weight: 400;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Huiwen Fangsong';
+  src: url('/fonts/dev/fangsong.woff2') format('woff2');
+  font-display: optional;
+  font-weight: 400;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Huiwen HKHei';
+  src: url('/fonts/dev/hkhei.woff2') format('woff2');
+  font-display: optional;
+  font-weight: 400;
+  font-style: normal;
+}

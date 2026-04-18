@@ -1,0 +1,230 @@
+---
+---
+
+<canvas id="flow-field"></canvas>
+
+<script>
+  // Initialization lifecycle:
+  //   - This module is bundled once by Vite (TS is transpiled).
+  //   - `init()` is idempotent; re-runs on every page that contains our
+  //     canvas. It attaches listeners, starts the rAF loop, and registers
+  //     an `astro:before-swap` cleanup that tears everything down before
+  //     the next navigation.
+  //   - `currentCleanup` lives at module scope so repeat visits (sketch →
+  //     home → sketch) work correctly without leaking listeners or rAFs.
+  let currentCleanup: (() => void) | null = null;
+
+  function init() {
+    if (currentCleanup) return;  // already running on this page
+    const canvas = document.getElementById('flow-field') as HTMLCanvasElement | null;
+    if (!canvas) return;         // not on a page that hosts this sketch
+
+    const ctx = canvas.getContext('2d')!;
+    const dpr = window.devicePixelRatio || 1;
+    let w = 0, h = 0;
+
+    function resize() {
+      const rect = canvas!.getBoundingClientRect();
+      w = rect.width;
+      h = rect.height;
+      canvas!.width = w * dpr;
+      canvas!.height = h * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.fillStyle = '#0f0f10';
+      ctx.fillRect(0, 0, w, h);
+    }
+    resize();
+
+    const hash = (x: number, y: number) => {
+      const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+      return s - Math.floor(s);
+    };
+    const smoothstep = (t: number) => t * t * (3 - 2 * t);
+    const noise = (x: number, y: number) => {
+      const xi = Math.floor(x), yi = Math.floor(y);
+      const xf = x - xi, yf = y - yi;
+      const u = smoothstep(xf), v = smoothstep(yf);
+      const a = hash(xi, yi);
+      const b = hash(xi + 1, yi);
+      const c = hash(xi, yi + 1);
+      const d = hash(xi + 1, yi + 1);
+      return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v;
+    };
+
+    type Particle = {
+      x: number; y: number;
+      vx: number; vy: number;
+      age: number; max: number;
+    };
+    const particles: Particle[] = [];
+    const N = 1000;
+
+    function spawn(p?: Particle) {
+      const x = Math.random() * w;
+      const y = Math.random() * h;
+      const max = 140 + Math.random() * 380;
+      if (p) { p.x = x; p.y = y; p.vx = 0; p.vy = 0; p.age = 0; p.max = max; }
+      else particles.push({ x, y, vx: 0, vy: 0, age: 0, max });
+    }
+    for (let i = 0; i < N; i++) spawn();
+
+    let mx = -9999, my = -9999;
+    const STIR_R = 160;
+    const STIR_STRENGTH = 2.4;
+    const STIR_EASE = 0.07;
+
+    const BASE_RGB = [230, 226, 214];
+    let ACCENT_RGB = [...BASE_RGB];
+    const tinted = document.querySelector('[class*="tint-"]');
+    if (tinted) {
+      const raw = getComputedStyle(tinted).getPropertyValue('--accent').trim();
+      const m = raw.match(/^#([0-9a-f]{6})$/i);
+      if (m) {
+        ACCENT_RGB = [
+          parseInt(m[1].slice(0, 2), 16),
+          parseInt(m[1].slice(2, 4), 16),
+          parseInt(m[1].slice(4, 6), 16),
+        ];
+      }
+    }
+
+    const onPointerMove = (e: PointerEvent) => {
+      const rect = canvas!.getBoundingClientRect();
+      mx = e.clientX - rect.left;
+      my = e.clientY - rect.top;
+    };
+    const onPointerLeave = () => { mx = -9999; my = -9999; };
+    canvas.addEventListener('pointermove', onPointerMove);
+    canvas.addEventListener('pointerleave', onPointerLeave);
+
+    let paused = false;
+    const onPause = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { paused: boolean };
+      paused = !!detail?.paused;
+    };
+    window.addEventListener('stage:pause', onPause);
+    window.addEventListener('resize', resize);
+
+    const FADE_FRAMES = 32;
+    const BASE_ALPHA = 0.42;
+
+    let t = 0;
+    let rafId = 0;
+    let aborted = false;
+
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    function frame() {
+      if (aborted) return;
+      if (!reduced) rafId = requestAnimationFrame(frame);
+      if (paused) return;
+
+      // Exponential erase via `destination-out` — each frame multiplies
+      // the existing pixel's ALPHA by (1 - 0.12), leaving its RGB alone.
+      // As alpha decays, the canvas's CSS background shows through cleanly,
+      // so "empty" areas always read as pure var(--bg).
+      //
+      // The older approach (fillRect with a semi-transparent bg color)
+      // looked identical frame-to-frame but caused an 8-bit rounding haze:
+      //   0.88 × 17 + 0.12 × 15 = 16.76 → rounds back up to 17
+      // so pixels that ever got bumped above bg got stuck at bg+1 or bg+2
+      // and accumulated a permanent gray fog. destination-out skips the
+      // color math entirely and avoids the problem.
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.12)';
+      ctx.fillRect(0, 0, w, h);
+      ctx.globalCompositeOperation = 'source-over';
+
+      t += 0.0015;
+      ctx.lineWidth = 0.5;
+
+      const R2 = STIR_R * STIR_R;
+
+      for (const p of particles) {
+        // Flow-field target velocity
+        const n = noise(p.x * 0.004 + t, p.y * 0.004 - t);
+        const angle = n * Math.PI * 4;
+        let targetVx = Math.cos(angle) * 0.9;
+        let targetVy = Math.sin(angle) * 0.9;
+
+        // Pointer repulsion with quadratic falloff
+        let stirAmount = 0;
+        const dx = p.x - mx, dy = p.y - my;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < R2) {
+          const d = Math.sqrt(d2) || 0.0001;
+          const falloff = 1 - d / STIR_R;
+          stirAmount = falloff * falloff;
+          const f = stirAmount * STIR_STRENGTH;
+          targetVx += (dx / d) * f;
+          targetVy += (dy / d) * f;
+        }
+
+        // Ease velocity toward target — this is the inertia
+        p.vx += (targetVx - p.vx) * STIR_EASE;
+        p.vy += (targetVy - p.vy) * STIR_EASE;
+
+        // Per-particle alpha: fade in at birth, fade out near death
+        let lifeAlpha = 1;
+        if (p.age < FADE_FRAMES) {
+          lifeAlpha = p.age / FADE_FRAMES;
+        } else if (p.max - p.age < FADE_FRAMES) {
+          lifeAlpha = Math.max(0, (p.max - p.age) / FADE_FRAMES);
+        }
+
+        // Blend base color toward accent by stir amount
+        const r = BASE_RGB[0] + (ACCENT_RGB[0] - BASE_RGB[0]) * stirAmount;
+        const g = BASE_RGB[1] + (ACCENT_RGB[1] - BASE_RGB[1]) * stirAmount;
+        const b = BASE_RGB[2] + (ACCENT_RGB[2] - BASE_RGB[2]) * stirAmount;
+        const a = BASE_ALPHA * lifeAlpha;
+        ctx.strokeStyle = `rgba(${r | 0}, ${g | 0}, ${b | 0}, ${a})`;
+
+        const nx = p.x + p.vx;
+        const ny = p.y + p.vy;
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(nx, ny);
+        ctx.stroke();
+        p.x = nx; p.y = ny;
+        p.age += 1;
+        if (p.age > p.max || p.x < 0 || p.x > w || p.y < 0 || p.y > h) spawn(p);
+      }
+    }
+    if (reduced) {
+      // Pre-simulate ~220 frames synchronously — enough tail build-up to
+      // show the flow field's shape — then stop. `frame()` checks `reduced`
+      // and skips scheduling the next rAF, so this is a closed loop.
+      // Unbind pointer so stirring can't kick off fresh motion.
+      canvas.removeEventListener('pointermove', onPointerMove);
+      canvas.removeEventListener('pointerleave', onPointerLeave);
+      for (let i = 0; i < 220; i++) frame();
+      aborted = true;
+    } else {
+      frame();
+    }
+
+    currentCleanup = () => {
+      aborted = true;
+      cancelAnimationFrame(rafId);
+      window.removeEventListener('stage:pause', onPause);
+      window.removeEventListener('resize', resize);
+      currentCleanup = null;
+    };
+    document.addEventListener('astro:before-swap', () => currentCleanup?.(), { once: true });
+  }
+
+  // Run on the initial load of this module (covers the no-ClientRouter case
+  // and the first navigation to a page that bundles this component).
+  init();
+  // And on every subsequent ClientRouter navigation.
+  document.addEventListener('astro:page-load', init);
+</script>
+
+<style>
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    background: var(--bg);
+  }
+</style>

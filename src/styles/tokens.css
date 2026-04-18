@@ -1,0 +1,66 @@
+/*
+ * Design tokens. Components reference these via var(--name), never the
+ * underlying values directly. Reshuffling palette or typography is a
+ * one-file edit.
+ *
+ * Two surface modes:
+ *   - default (no class): ink on deep charcoal — dark, always.
+ *   - .paper             : deep ink on warm paper — opt-in per page via
+ *                          <BaseLayout mode="paper">.
+ *
+ * Accent system:
+ *   - Default --accent equals --fg, so nothing visibly changes unless
+ *     a sketch wrapper opts in with a tint-* class.
+ *   - Accent shows through in ::selection and anywhere a sketch page
+ *     explicitly paints with var(--accent).
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* === Ink mode (default) === */
+  --bg:     #0f0f10;
+  --fg:     #e6e2d6;
+  --fg-dim: rgba(230, 226, 214, 0.78);  /* secondary prose */
+  --muted:  rgba(230, 226, 214, 0.48);  /* meta info */
+  --faint:  rgba(230, 226, 214, 0.28);  /* hints, watermarks */
+  --rule:   rgba(230, 226, 214, 0.12);  /* dividers */
+
+  /* === Accent palette (sketches opt in) === */
+  --accent-plum: #a48491;  /* 藕荷 — 冷紫 */
+  --accent-moss: #7d9282;  /* 苔绿 — 湿润 */
+  --accent-rust: #b68870;  /* 赭石 — 暖土 */
+  --accent-mist: #8aa0b4;  /* 雾蓝 — 清冷 */
+  --accent-dune: #b6a078;  /* 砂黄 — 旧纸 */
+
+  /* Default accent: no visible effect until a tint-* class overrides. */
+  --accent: var(--fg);
+
+  /* === Fonts === */
+  /* display: site name & all headings — 明朝 */
+  --font-display: 'Huiwen Mincho', 'Source Han Serif SC', 'Songti SC', 'SimSun', serif;
+  /* body: long-form reading & quiet prose — 仿宋 */
+  --font-body: 'Huiwen Fangsong', 'FangSong', 'STFangsong', serif;
+  /* mono: dates, code, metadata — system monospace */
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, 'Cascadia Code', monospace;
+}
+
+/* === Paper mode (opt-in per page) === */
+.paper {
+  color-scheme: light;
+  --bg:     #efeadd;                      /* warm paper */
+  --fg:     #1a1917;                      /* deep ink, not pure black */
+  --fg-dim: rgba(26, 25, 23, 0.74);
+  --muted:  rgba(26, 25, 23, 0.50);
+  --faint:  rgba(26, 25, 23, 0.28);
+  --rule:   rgba(26, 25, 23, 0.14);
+  /* Accents deliberately unchanged — the same 5 muted tones read on
+     both surfaces, only their contrast shifts. */
+}
+
+/* === Tint utilities (apply on a sketch wrapper) === */
+.tint-plum { --accent: var(--accent-plum); }
+.tint-moss { --accent: var(--accent-moss); }
+.tint-rust { --accent: var(--accent-rust); }
+.tint-mist { --accent: var(--accent-mist); }
+.tint-dune { --accent: var(--accent-dune); }

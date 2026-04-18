@@ -1,0 +1,132 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import LobbySketch from '../components/LobbySketch.astro';
+
+const sketches = [
+  {
+    slug: 'hello-world',
+    title: 'Flow Field',
+    date: '2026-04-18',
+    kind: 'GENERATIVE',
+    summary: '漂流点阵。新站点的胎动。',
+  },
+];
+---
+
+<BaseLayout title="眠海">
+  <LobbySketch slot="stage" />
+
+  <article class="tint-dune">
+    <header>
+      <h1 class="enter" style="--i: 0;">眠&nbsp;海</h1>
+      <p class="sub enter" style="--i: 1;">SUNKEN KEEP / 保持沉没</p>
+    </header>
+
+    <ul class="sketches">
+      {sketches.map((s, idx) => (
+        <li class="enter" style={`--i: ${idx + 2};`}>
+          <a href={`/sketches/${s.slug}/`} data-heat-trigger>
+            <div class="row">
+              <span class="title">{s.title}</span>
+              <span class="date">{s.date}</span>
+            </div>
+            <p class="summary">{s.summary}</p>
+            <span class="kind">— {s.kind}</span>
+          </a>
+        </li>
+      ))}
+    </ul>
+  </article>
+</BaseLayout>
+
+<script>
+  // Hover on a listing heats up the lobby canvas. We re-attach on every
+  // ClientRouter navigation because the DOM (and its listeners) is
+  // discarded on each swap. No cleanup needed — the listeners live on
+  // DOM elements that get GC'd with the old page.
+  function attachHeat() {
+    for (const a of document.querySelectorAll<HTMLElement>('[data-heat-trigger]')) {
+      a.addEventListener('mouseenter', () => {
+        window.dispatchEvent(new CustomEvent('stage:heat', { detail: { level: 1 } }));
+      });
+      a.addEventListener('mouseleave', () => {
+        window.dispatchEvent(new CustomEvent('stage:heat', { detail: { level: 0 } }));
+      });
+    }
+  }
+  attachHeat();
+  document.addEventListener('astro:page-load', attachHeat);
+</script>
+
+<style>
+  header {
+    margin-bottom: 3.5em;
+    padding-bottom: 2em;
+    border-bottom: 1px solid var(--rule);
+  }
+  h1 {
+    font-family: var(--font-display);
+    font-weight: 400;
+    letter-spacing: 0.35em;
+    font-size: 2.6rem;
+    margin: 0;
+    padding-left: 0.35em;
+    line-height: 1.2;
+  }
+  .sub {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    color: var(--muted);
+    letter-spacing: 0.3em;
+    margin: 0.9em 0 0;
+    padding-left: 0.3em;
+    font-size: 0.72rem;
+  }
+  ul.sketches {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  ul.sketches li {
+    padding: 1.8em 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  ul.sketches a {
+    display: block;
+    text-decoration: none;
+  }
+  ul.sketches .row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 1em;
+  }
+  ul.sketches a:hover .title {
+    color: var(--accent);
+  }
+  .title {
+    font-family: var(--font-display);
+    font-size: 1.3rem;
+    transition: color 200ms ease;
+  }
+  .date {
+    font-family: var(--font-mono);
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.12em;
+    white-space: nowrap;
+  }
+  .summary {
+    margin: 0.5em 0 0.4em;
+    color: var(--fg-dim);
+    font-size: 0.95rem;
+  }
+  .kind {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.25em;
+    font-size: 0.65rem;
+    color: var(--accent);
+  }
+</style>

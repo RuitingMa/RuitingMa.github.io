@@ -1,0 +1,241 @@
+---
+import '../styles/tokens.css';
+import { ClientRouter } from 'astro:transitions';
+
+interface Props {
+  title: string;
+  description?: string;
+  /** Absolute path under /public, e.g. "/og/hello-world.png". */
+  image?: string;
+  mode?: 'ink' | 'paper';
+}
+const SITE_NAME = '眠海';
+const DEFAULT_DESCRIPTION = '眠海 / SUNKEN KEEP — 生成式与交互作品的陈列。';
+const {
+  title,
+  description = DEFAULT_DESCRIPTION,
+  image,
+  mode = 'ink',
+} = Astro.props;
+const fullTitle = title === SITE_NAME ? SITE_NAME : `${title} · ${SITE_NAME}`;
+const canonicalURL = new URL(Astro.url.pathname, Astro.site);
+const ogImage = image ? new URL(image, Astro.site).toString() : undefined;
+---
+
+<!DOCTYPE html>
+<html lang="zh-CN" class:list={[mode === 'paper' && 'paper']}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="generator" content={Astro.generator} />
+    <title>{fullTitle}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonicalURL} />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content={SITE_NAME} />
+    <meta property="og:title" content={fullTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonicalURL} />
+    {ogImage && <meta property="og:image" content={ogImage} />}
+    <meta name="twitter:card" content={ogImage ? 'summary_large_image' : 'summary'} />
+    <meta name="twitter:title" content={fullTitle} />
+    <meta name="twitter:description" content={description} />
+    {ogImage && <meta name="twitter:image" content={ogImage} />}
+    {/* Dev-only fallback. In prod, per-page @font-face is injected by the
+        font-subset integration. */}
+    {import.meta.env.DEV && <link rel="stylesheet" href="/fonts-dev.css" />}
+    <ClientRouter />
+  </head>
+  <body>
+    <main>
+      <aside class="stage" transition:name="stage">
+        <slot name="stage" />
+        <span class="stage-pause" aria-hidden="true">paused</span>
+      </aside>
+      <section class="column" transition:name="column">
+        <slot />
+      </section>
+    </main>
+
+    <div class="grain" aria-hidden="true"></div>
+
+    <script>
+      // --- Space key → toggle stage pause ---
+      // Canvas components listen for `stage:pause` and freeze their rAF loop.
+      //
+      // Guarded against double-install: with <ClientRouter /> this module
+      // shouldn't re-execute on SPA nav (no data-astro-rerun here), but if it
+      // ever does, the flag keeps us from stacking keydown listeners or
+      // losing the paused state. We also re-query the stage element inside
+      // the handler because it's a fresh DOM node after each navigation.
+      const w = window as unknown as { __stagePauseInstalled?: boolean; __stagePaused?: boolean };
+      if (!w.__stagePauseInstalled) {
+        w.__stagePauseInstalled = true;
+        w.__stagePaused = false;
+
+        window.addEventListener('keydown', (e) => {
+          if (e.code !== 'Space') return;
+          const tgt = e.target as HTMLElement | null;
+          if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return;
+          const stage = document.querySelector<HTMLElement>('.stage');
+          if (!stage) return;
+          e.preventDefault();
+          w.__stagePaused = !w.__stagePaused;
+          stage.classList.toggle('paused', w.__stagePaused);
+          window.dispatchEvent(new CustomEvent('stage:pause', { detail: { paused: w.__stagePaused } }));
+        });
+
+        // After each SPA nav, if the user was paused, re-apply the class to
+        // the new stage element (classes don't survive a transition swap).
+        document.addEventListener('astro:page-load', () => {
+          if (!w.__stagePaused) return;
+          const stage = document.querySelector<HTMLElement>('.stage');
+          stage?.classList.add('paused');
+          window.dispatchEvent(new CustomEvent('stage:pause', { detail: { paused: true } }));
+        });
+      }
+    </script>
+
+    <style is:global>
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--fg);
+      }
+      body {
+        font-family: var(--font-body);
+        line-height: 1.85;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+      }
+      a { color: inherit; }
+      p { margin: 1em 0; }
+      ::selection {
+        background: var(--accent);
+        color: var(--bg);
+      }
+
+      /* === Entry animations ===
+         Opt in with class="enter" (fade + lift) or "enter-soft" (fade only).
+         Stagger via inline style="--i: N;" — each step delays 80ms.  */
+      @keyframes enter-up {
+        from { opacity: 0; transform: translateY(8px); }
+        to   { opacity: 1; transform: translateY(0); }
+      }
+      @keyframes enter-soft {
+        from { opacity: 0; }
+        to   { opacity: 1; }
+      }
+      .enter {
+        opacity: 0;
+        animation: enter-up 700ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        animation-delay: calc(var(--i, 0) * 80ms + 120ms);
+      }
+      .enter-soft {
+        opacity: 0;
+        animation: enter-soft 900ms ease-out both;
+        animation-delay: calc(var(--i, 0) * 80ms + 120ms);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .enter, .enter-soft { opacity: 1; animation: none; }
+      }
+
+      /* === Write-on underline ===
+         Add class="writ" to any link you want to have the accent-colored
+         underline draw left→right on hover. Scoped opt-in (don't apply
+         globally to .column a because list-item anchors wrap blocks).  */
+      .writ {
+        background-image: linear-gradient(currentColor, currentColor);
+        background-position: 0 100%;
+        background-repeat: no-repeat;
+        background-size: 0 1px;
+        padding-bottom: 0.08em;
+        text-decoration: none;
+        transition: background-size 400ms cubic-bezier(0.4, 0, 0.2, 1),
+                    color 200ms ease;
+      }
+      .writ:hover {
+        background-size: 100% 1px;
+        color: var(--accent);
+      }
+
+      /* === Pause indicator — appears on stage when canvas is paused ===
+         Uses color transition (not opacity) because opacity on this element
+         gets clobbered in dev for reasons that aren't worth chasing.  */
+      .stage-pause {
+        position: absolute;
+        bottom: 1.2rem;
+        right: 1.4rem;
+        width: auto;
+        height: auto;
+        font-family: var(--font-mono);
+        font-size: 0.64rem;
+        letter-spacing: 0.36em;
+        text-transform: uppercase;
+        color: transparent;
+        pointer-events: none;
+        transition: color 300ms ease;
+      }
+      .stage.paused .stage-pause {
+        color: rgba(230, 226, 214, 0.55);
+      }
+
+      /* --- Double-column stage/column layout --- */
+      main {
+        display: grid;
+        grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+        max-width: var(--max-layout);
+        margin: 0 auto;
+        min-height: 100vh;
+      }
+      .stage {
+        position: sticky;
+        top: 0;
+        height: 100vh;
+        overflow: hidden;
+        background: var(--bg);
+        border-right: 1px solid var(--rule);
+      }
+      .stage canvas,
+      .stage > *:not(.stage-pause) {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      .column {
+        padding: 5rem 3rem 8rem;
+        box-sizing: border-box;
+        max-width: calc(var(--max-reading) + 6rem);
+      }
+
+      /* --- Film-grain overlay, subtle, above everything --- */
+      .grain {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 9999;
+        opacity: 0.07;
+        mix-blend-mode: overlay;
+        background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.9 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+      }
+
+      /* --- Mobile: collapse to single column, stage becomes a short hero --- */
+      @media (max-width: 860px) {
+        main {
+          grid-template-columns: 1fr;
+        }
+        .stage {
+          position: relative;
+          height: 45vh;
+          border-right: none;
+          border-bottom: 1px solid var(--rule);
+        }
+        .column {
+          padding: 2.5rem 1.5rem 5rem;
+          max-width: 100%;
+        }
+      }
+    </style>
+  </body>
+</html>
