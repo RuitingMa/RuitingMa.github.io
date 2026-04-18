@@ -36,11 +36,18 @@
   /* Default accent: no visible effect until a tint-* class overrides. */
   --accent: var(--fg);
 
-  /* === Fonts === */
+  /* === Fonts ===
+   * Each Huiwen face has a sibling '<Family> Fallback' declared by
+   * build-fonts.py — that face wraps local system fonts and re-declares
+   * the webfont's ascent/descent/line-gap, so the fallback occupies the
+   * same line box. When the real webfont arrives and `font-display:
+   * fallback` swaps it in, line heights don't jump. The raw system-font
+   * names at the tail cover machines missing both the webfont and the
+   * declared local() fallbacks. */
   /* display: site name & all headings — 明朝 */
-  --font-display: 'Huiwen Mincho', 'Source Han Serif SC', 'Songti SC', 'SimSun', serif;
+  --font-display: 'Huiwen Mincho', 'Huiwen Mincho Fallback', 'Source Han Serif SC', 'Songti SC', 'SimSun', serif;
   /* body: long-form reading & quiet prose — 仿宋 */
-  --font-body: 'Huiwen Fangsong', 'FangSong', 'STFangsong', serif;
+  --font-body: 'Huiwen Fangsong', 'Huiwen Fangsong Fallback', 'FangSong', 'STFangsong', serif;
   /* mono: dates, code, metadata — system monospace */
   --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, 'Cascadia Code', monospace;
 }
