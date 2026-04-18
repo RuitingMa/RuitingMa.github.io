@@ -64,6 +64,18 @@ ALL_FACES = [
     ("huiwen-hkhei.ttf",    "Huiwen HKHei",    "hkhei"),
 ]
 
+# System fonts to wrap as the "<Family> Fallback" face — their metrics get
+# re-declared via ascent/descent/line-gap overrides so fallback and
+# webfont occupy the same line box. Result: when `font-display: fallback`
+# swaps in the webfont, the line heights don't jump (CLS ≈ 0). Order
+# matters only for first-match-wins `src: local()` resolution.
+FALLBACK_SYSTEM_FONTS = {
+    "mincho":   ["Songti SC", "STSong", "SimSun"],
+    "fangsong": ["FangSong", "STFangsong"],
+    "kaiti":    ["Kaiti SC", "STKaiti", "KaiTi"],
+    "hkhei":    ["PingFang SC", "Heiti SC", "STHeiti", "Microsoft YaHei"],
+}
+
 
 def _active_faces():
     """Return only the ALL_FACES entries whose family is actually
@@ -115,6 +127,41 @@ def _kb(n: int) -> str:
     return f"{n / 1024:>7.1f} KB"
 
 
+def _metric_overrides(face_bytes: bytes):
+    """Read typographic metrics from a TTF and express them as CSS
+    percentage overrides. CSS ascent/descent/line-gap-override take
+    non-negative percentages of the em box; OS/2 sTypoDescender is
+    signed (negative), so we flip its sign."""
+    f = _fresh_font(face_bytes)
+    upem = f["head"].unitsPerEm
+    os2 = f["OS/2"]
+    asc  = f"{os2.sTypoAscender  / upem * 100:.2f}"
+    desc = f"{-os2.sTypoDescender / upem * 100:.2f}"
+    gap  = f"{os2.sTypoLineGap   / upem * 100:.2f}"
+    return asc, desc, gap
+
+
+def _fallback_face_css(slug: str, family: str, face_bytes: bytes) -> str:
+    """Emit an @font-face that wraps system fonts but reports the real
+    webfont's metrics. Named '<Family> Fallback' — referenced in
+    tokens.css between the webfont and raw system fonts, so the
+    cascade resolves to this face until the webfont arrives. When the
+    webfont loads, line heights don't change because this face already
+    declared matching metrics."""
+    locals_ = FALLBACK_SYSTEM_FONTS.get(slug)
+    if not locals_:
+        return ""
+    asc, desc, gap = _metric_overrides(face_bytes)
+    src = ",".join(f"local('{name}')" for name in locals_)
+    return (
+        f"@font-face{{font-family:'{family} Fallback';"
+        f"src:{src};"
+        f"ascent-override:{asc}%;"
+        f"descent-override:{desc}%;"
+        f"line-gap-override:{gap}%}}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # `dev` subcommand
 # ---------------------------------------------------------------------------
@@ -142,11 +189,14 @@ def cmd_dev():
             f"@font-face {{\n"
             f"  font-family: '{family}';\n"
             f"  src: url('/fonts/dev/{slug}.woff2') format('woff2');\n"
-            f"  font-display: optional;\n"
+            f"  font-display: fallback;\n"
             f"  font-weight: 400;\n"
             f"  font-style: normal;\n"
             f"}}"
         )
+        fb = _fallback_face_css(slug, family, data)
+        if fb:
+            css_blocks.append(fb)
 
     # Regenerate public/fonts-dev.css so it matches the active face set.
     dev_css = ASTRO_ROOT / "public" / "fonts-dev.css"
@@ -251,7 +301,7 @@ def _face_css(family: str, url: str) -> str:
     return (
         f"@font-face{{font-family:'{family}';"
         f"src:url('{url}') format('woff2');"
-        f"font-display:optional;"
+        f"font-display:fallback;"
         f"font-weight:400;font-style:normal}}"
     )
 
@@ -307,10 +357,16 @@ def cmd_pages(dist_dir_str: str):
     if fonts_out.exists():
         shutil.rmtree(fonts_out)
 
-    # 1. Build common subsets, one per face.
+    # 1. Build common subsets, one per face. Also emit one fallback
+    # @font-face per face — it has no src file (wraps local system fonts
+    # with metric overrides) but logically belongs in the common pool
+    # since every page references it identically via tokens.css.
     common_css = []
     common_urls = []
     for slug, family in face_families.items():
+        fb = _fallback_face_css(slug, family, face_bytes[slug])
+        if fb:
+            common_css.append(fb)
         cps = {ord(c) for c in common} & face_cmaps[slug]
         if not cps:
             continue

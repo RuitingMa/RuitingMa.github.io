@@ -10,15 +10,19 @@
 @font-face {
   font-family: 'Huiwen Mincho';
   src: url('/fonts/dev/mincho.woff2') format('woff2');
-  font-display: optional;
+  font-display: fallback;
   font-weight: 400;
   font-style: normal;
 }
 
+@font-face{font-family:'Huiwen Mincho Fallback';src:local('Songti SC'),local('STSong'),local('SimSun');ascent-override:83.10%;descent-override:22.10%;line-gap-override:0.00%}
+
 @font-face {
   font-family: 'Huiwen Fangsong';
   src: url('/fonts/dev/fangsong.woff2') format('woff2');
-  font-display: optional;
+  font-display: fallback;
   font-weight: 400;
   font-style: normal;
 }
+
+@font-face{font-family:'Huiwen Fangsong Fallback';src:local('FangSong'),local('STFangsong');ascent-override:83.10%;descent-override:22.10%;line-gap-override:0.00%}
