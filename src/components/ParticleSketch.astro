@@ -226,5 +226,8 @@
     width: 100%;
     height: 100%;
     background: var(--bg);
+    /* On touch devices, claim the gesture for sketch interaction.
+       Users scroll via the text column below. */
+    touch-action: none;
   }
 </style>

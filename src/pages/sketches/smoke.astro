@@ -1,0 +1,103 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import SmokeSketch from '../../components/SmokeSketch.astro';
+---
+
+<BaseLayout title="Smoke">
+  <SmokeSketch slot="stage" />
+
+  <article class="tint-plum">
+    <p class="breadcrumb enter" style="--i: 0;"><a href="/" class="writ">← 眠海</a></p>
+
+    <h1 class="enter" style="--i: 1;">Smoke</h1>
+    <p class="meta enter" style="--i: 2;">2026-04-19 · GENERATIVE</p>
+
+    <p class="enter" style="--i: 3;">
+      二万六千只细胞排出矩形密度场，每一帧——每一帧！——都沿着速度场的箭头回溯恰好一格，然后用双线性插值去采样上游某个位置上的密度，嗯，邮递员非要把信投递到两栋房子间的裂缝里去。这就是半拉格朗日平流，Jos Stam 在一九九九年，也就是千禧虫恐慌尚未被证伪的那个秋天交给这个世界的礼物。
+    </p>
+    <p class="note enter" style="--i: 4;">
+      速度场取自一个噪声场的旋度，<code>u = curl(ψ)</code>，就这样。因为旋度天然地满足散度为零的条件，于是流体仿真中最昂贵的那道工序，压力投影，需要求解泊松方程的庞然大物，就这样整个地、无声无息地消失了，像一个知道太多的证人在凌晨三点从汽车旅馆退房后再也没有出现在任何记录里。
+    </p>
+    <p class="note enter" style="--i: 5;">
+      两处静默的点源常驻在那里发烟，日复一日，带着耐心。如果有兴趣的话，光标划过时会在触及之处再注入一小撮阿司匹林，看看它怎样不情不愿地溶解开来。网格很小，全部跑在 CPU 上，而 Stam 那套二十七年前的把戏，在今天的浏览器里依然能以每秒六十帧的速度跑满，可能时间也不过是另一个可以被平流掉的标量场。
+    </p>
+  </article>
+</BaseLayout>
+
+<style>
+  .breadcrumb {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.25em;
+    opacity: 0.55;
+    font-size: 0.72rem;
+    margin: 0 0 4em;
+  }
+  .breadcrumb a {
+    text-decoration: none;
+  }
+  .breadcrumb a:hover {
+    color: var(--accent);
+  }
+  h1 {
+    font-family: var(--font-display);
+    font-size: 2.1rem;
+    font-weight: 400;
+    letter-spacing: 0.05em;
+    margin: 0 0 0.5em;
+    position: relative;
+    padding-left: 0.7em;
+    line-height: 1.25;
+  }
+  h1::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0.18em;
+    bottom: 0.22em;
+    width: 3px;
+    background: var(--accent);
+  }
+  .meta {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.25em;
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+    margin: 0 0 3em;
+  }
+  .cue {
+    font-family: var(--font-mono);
+    font-size: 0.82em;
+    letter-spacing: 0.08em;
+    padding: 0.14em 0.5em;
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    color: var(--accent);
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+  .note {
+    color: var(--fg-dim);
+    font-size: 0.92rem;
+  }
+  .note + .note {
+    margin-top: 1.1em;
+  }
+  code {
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    padding: 0.1em 0.35em;
+    background: rgba(230, 226, 214, 0.08);
+    border-radius: 2px;
+  }
+  a.writ {
+    color: inherit;
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--accent) 55%, transparent);
+    text-underline-offset: 0.2em;
+  }
+  a.writ:hover {
+    color: var(--accent);
+  }
+</style>

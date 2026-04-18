@@ -227,7 +227,9 @@ const ogImage = image ? new URL(image, Astro.site).toString() : undefined;
         }
         .stage {
           position: relative;
-          height: 45vh;
+          /* svh = small viewport height, ignores dynamic URL bar on mobile.
+             Without it, 45vh shifts when Safari collapses its chrome.   */
+          height: 45svh;
           border-right: none;
           border-bottom: 1px solid var(--rule);
         }
