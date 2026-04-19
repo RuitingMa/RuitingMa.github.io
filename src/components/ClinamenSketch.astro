@@ -1,0 +1,853 @@
+---
+/*
+ * Clinamen — sketch component (phase 2b, revised).
+ *
+ * Reverted from phase 2c's wave-equation surface back to analytic ripple
+ * packets. The wave equation was physically richer but visually smeared
+ * the clean concentric-ring aesthetic. Discrete ripples keep each event
+ * as a geometrically crisp caustic object — matching the reference image.
+ *
+ * Phase 2b (kept): audio online. Each qualifying collision strikes two
+ * modal bells, pitched inversely to their radii. AudioContext bootstraps
+ * on the first pointerdown.
+ *
+ * Phase 2a (kept): lanterns are physical circles of varying size, drifting
+ * in a curl-of-windowed-noise flow field, bouncing off walls, resolving
+ * inter-lantern collisions as elastic impacts. Sustained-contact state
+ * machine + continuous contact damping prevent pile-ups.
+ *
+ * Lantern radius drives visual body size and bell pitch (f ∝ 1/r).
+ *
+ * Lifecycle mirrors existing sketches:
+ *   - init() idempotent; re-runs on every page load hosting this canvas.
+ *   - astro:before-swap tears down GL resources before SPA nav.
+ *   - stage:pause freezes physics, rAF, and ripple aging.
+ *   - prefers-reduced-motion: one still frame + pre-placed decorative ripples.
+ */
+---
+
+<div class="wrap">
+  <canvas id="clinamen-gl"></canvas>
+  <span class="audio-hint" data-audio-hint>轻触水面以唤醒钟声</span>
+</div>
+
+<script>
+  import vertexSource from '../shaders/clinamen.vert.glsl?raw';
+  import fragmentSource from '../shaders/clinamen.frag.glsl?raw';
+  import { ModalBellSynth } from '../audio/modal-bell';
+
+  // Must match MAX_RIPPLES in the fragment shader.
+  const MAX_RIPPLES = 24;
+  // Ripples older than this are retired (shader envelope is negligible).
+  const RIPPLE_LIFETIME = 5.0;
+
+  // Number of lanterns floating in the pond. Density is deliberately low:
+  // Clinamen is about rare, unexpected encounters, not constant churn.
+  const LANTERN_COUNT = 15
+
+  // Reference radius (for pitch calculation and general scale).
+  // Real range is ~[MIN_RADIUS, MAX_RADIUS]; pitch = BASE_HZ * (REF / r).
+  const MIN_RADIUS = 0.018;
+  const MAX_RADIUS = 0.055;
+  const REF_RADIUS = 0.025;
+  const BASE_HZ    = 440;
+
+  // Collisions with approach speed below this are treated as gentle kisses:
+  // physics still resolves but no ripple/sound event is emitted. Also gates
+  // the separation kick — soft grazes don't get energy injected, which
+  // would otherwise bounce around piles as self-sustaining chatter.
+  const COLLISION_RIPPLE_THRESHOLD = 0.012;
+  // Minimum outward normal speed after a qualifying impact (only applied
+  // when approach > COLLISION_RIPPLE_THRESHOLD). Keeps real hits from
+  // hanging at grinding-low speed. Soft impacts skip this path entirely
+  // and fall into sustained-contact handling.
+  const MIN_SEP_SPEED = 0.018;
+  // Defensive cap on per-lantern speed.
+  const MAX_SPEED = 0.18;
+
+  // Audio hygiene. A lantern that just rang stays quiet briefly — otherwise
+  // a single bowl in a pile can fire many times per second. The per-frame
+  // cap prevents a cascading impact from dumping a chord of strikes at once.
+  const STRIKE_COOLDOWN_MS = 340;
+  const MAX_STRIKES_PER_FRAME = 3;
+
+  // Must match MAX_LANTERNS in the fragment shader. Also used as the stride
+  // when encoding a (i, j) pair into a numeric key for the contact set.
+  const MAX_LANTERNS = 64;
+
+  // Ambient ripples — the pond's background pump current. Fires on a random
+  // interval independent of collisions; amplitudes are lower than collision
+  // ripples since these are not "events" but atmosphere.
+  const AMBIENT_RIPPLE_MIN_MS = 1200;
+  const AMBIENT_RIPPLE_MAX_MS = 3000;
+
+  // Physics tuning. The current field is pure multi-scale curl-of-noise
+  // (divergence-free, no sinks; higher-frequency band breaks up stagnation
+  // points of the lower band). Walls are repulsive — but as an acceleration
+  // on the lantern, NOT as a target velocity. A target velocity at the
+  // wall turns the cushion boundary into a steady-state attractor: every
+  // lantern coasting inward decelerates to zero right at the cushion's
+  // inner edge and parks there, which is exactly the "band of lanterns
+  // 0.14 off the wall" bug the first attempt produced. An acceleration
+  // gives a kick and moves on — no equilibrium line.
+  const INNER_NOISE_GAIN   = 0.030;  // curl-of-noise amplitude in interior
+  const WALL_REPEL_THICK   = 0.14;   // lanterns within this feel wall force
+  const WALL_REPEL_ACCEL   = 1.6;    // inward accel at the wall (world/s²)
+  const VEL_DAMPING        = 0.985;  // per-frame-ish; applied as pow(damp, dt*60)
+  const VEL_FOLLOW         = 0.06;   // how quickly lantern velocity eases toward current
+
+  // Ripples born within this UV distance of a wall have their amplitude
+  // smoothly ramped down to zero — hides the "clipped half-circle" artifact
+  // of a source born against a boundary.
+  const RIPPLE_WALL_FADE = 0.12;
+
+  let currentCleanup: (() => void) | null = null;
+
+  function init() {
+    if (currentCleanup) return;
+    const canvas = document.getElementById('clinamen-gl') as HTMLCanvasElement | null;
+    if (!canvas) return;
+
+    const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, premultipliedAlpha: false });
+    if (!gl) {
+      console.warn('[clinamen] WebGL2 not available; sketch cannot render.');
+      return;
+    }
+
+    function compile(type: number, source: string): WebGLShader {
+      const shader = gl!.createShader(type)!;
+      gl!.shaderSource(shader, source);
+      gl!.compileShader(shader);
+      if (!gl!.getShaderParameter(shader, gl!.COMPILE_STATUS)) {
+        const log = gl!.getShaderInfoLog(shader);
+        gl!.deleteShader(shader);
+        throw new Error(`[clinamen] Shader compile error:\n${log}`);
+      }
+      return shader;
+    }
+
+    const vs = compile(gl.VERTEX_SHADER, vertexSource);
+    const fs = compile(gl.FRAGMENT_SHADER, fragmentSource);
+    const program = gl.createProgram()!;
+    gl.attachShader(program, vs);
+    gl.attachShader(program, fs);
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      throw new Error(`[clinamen] Program link error:\n${gl.getProgramInfoLog(program)}`);
+    }
+    gl.useProgram(program);
+
+    const quad = new Float32Array([-1, -1,  1, -1,  -1, 1,  1, 1]);
+    const vbo = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
+    const aPos = gl.getAttribLocation(program, 'a_pos');
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+    const uResolution   = gl.getUniformLocation(program, 'u_resolution');
+    const uTime         = gl.getUniformLocation(program, 'u_time');
+    const uLanternCount = gl.getUniformLocation(program, 'u_lanternCount');
+    const uLanterns     = gl.getUniformLocation(program, 'u_lanterns');
+    const uRippleCount  = gl.getUniformLocation(program, 'u_rippleCount');
+    const uRipples      = gl.getUniformLocation(program, 'u_ripples');
+    const uRippleShape  = gl.getUniformLocation(program, 'u_rippleShape');
+
+    const rnd = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
+
+    // --- Lantern state ---
+    // Positions in aspect-corrected world space: x ∈ [radius, aspect-radius],
+    // y ∈ [radius, 1-radius]. On canvas resize we don't remap; the wall
+    // bounce reels them in if aspect shrinks.
+    type Lantern = {
+      x: number; y: number;
+      vx: number; vy: number;
+      radius: number;
+      intensity: number;
+      pitch: number;      // base frequency in Hz — phase 2b will use this
+      lastStrikeAt: number;  // performance.now() timestamp of last audible strike
+      // Per-strike brightness pulse, 0..~1. Decays exponentially; applied
+      // multiplicatively to intensity at upload time. Not gated by the audio
+      // cooldown/budget — eye reads continuous micro-pulses as "the lantern
+      // rang", where ear at that rate would read chatter.
+      flash: number;
+      // Proximity dim. Every frame the pair loop computes a fresh per-
+      // lantern `targetDim` (max over neighbors: approaching + within
+      // dim range → ramp toward 1). The displayed `proximityDim` then
+      // relaxes toward that target with a ~180 ms time constant, so
+      // pair-wise jumps (approach-velocity sign flips, neighbor
+      // occlusion changes) smear into continuous fades instead of
+      // snapping. `proximityDim` is what the shader consumes.
+      proximityDim: number;
+      targetDim: number;
+    };
+
+    function placeLanterns(count: number, aspect: number): Lantern[] {
+      const L: Lantern[] = [];
+      // 45 lanterns with a wider radius range needs more rejection attempts.
+      const maxAttempts = 500;
+      for (let i = 0; i < count; i++) {
+        let placed = false;
+        for (let a = 0; a < maxAttempts && !placed; a++) {
+          const radius = rnd(MIN_RADIUS, MAX_RADIUS);
+          const x = rnd(radius, aspect - radius);
+          const y = rnd(radius, 1 - radius);
+          let ok = true;
+          for (const other of L) {
+            const dx = x - other.x;
+            const dy = y - other.y;
+            const minSep = radius + other.radius + 0.010;
+            if (dx * dx + dy * dy < minSep * minSep) { ok = false; break; }
+          }
+          if (ok) {
+            const intensity = rnd(0.45, 0.78);
+            // Bell scaling: pitch ∝ 1/radius. ±2% detune so equal-sized
+            // lanterns don't strike identical notes.
+            const pitch = BASE_HZ * (REF_RADIUS / radius) * rnd(0.98, 1.02);
+            L.push({
+              x, y,
+              vx: rnd(-0.015, 0.015),
+              vy: rnd(-0.015, 0.015),
+              radius, intensity, pitch,
+              lastStrikeAt: -Infinity,
+              flash: 0,
+              proximityDim: 0,
+              targetDim: 0,
+            });
+            placed = true;
+          }
+        }
+      }
+      return L;
+    }
+
+    // Lantern uniform buffer: vec4 per lantern (x_uv, y_uv, intensity, radius).
+    const lanternBuf = new Float32Array(64 * 4);
+    let lanterns: Lantern[] = [];
+
+    // --- Ripple state ---
+    type Ripple = {
+      cx: number; cy: number; birth: number; amp: number;
+      lambda: number; v: number; decay: number; sigma0: number;
+    };
+    const ripples: Ripple[] = [];
+    const rippleBuf      = new Float32Array(MAX_RIPPLES * 4);
+    const rippleShapeBuf = new Float32Array(MAX_RIPPLES * 4);
+
+    // Smooth fade of ripple amplitude based on distance from the nearest
+    // UV-space wall. A ripple born inside RIPPLE_WALL_FADE of any wall
+    // loses amplitude proportionally, reaching zero at the wall.
+    const wallFade = (cxUV: number, cyUV: number) => {
+      const d = Math.min(cxUV, 1 - cxUV, cyUV, 1 - cyUV);
+      const s = Math.max(0, Math.min(1, d / RIPPLE_WALL_FADE));
+      return s * s * (3 - 2 * s);
+    };
+
+    function spawnCollisionRipple(cx: number, cy: number, amp: number, now: number) {
+      const faded = amp * wallFade(cx, cy);
+      if (faded < 1e-4) return;
+      if (ripples.length >= MAX_RIPPLES) ripples.shift();
+      const lambda = rnd(0.10, 0.24);
+      const v      = rnd(0.25, 0.65);
+      const decay  = rnd(1.3, 2.6);
+      const sigma0 = rnd(0.14, 0.26);
+      ripples.push({ cx, cy, birth: now, amp: faded, lambda, v, decay, sigma0 });
+    }
+
+    function spawnAmbientRipple(now: number) {
+      // Bias the spawn toward dark zones (far from lanterns). Rationale:
+      // caustic is per-lantern and gated by proximity, so ambient ripples
+      // spawned NEAR lanterns just pile on the lantern's own caustic
+      // activity and read as noise; ambient ripples spawned in the gaps
+      // sit at the faint edges of multiple lanterns' caustic zones and
+      // read as quiet disturbance — atmosphere instead of clutter.
+      //
+      // 6 candidate positions, pick the one with the largest min-distance
+      // to any lantern. Distance is in aspect-corrected world coordinates
+      // so the measurement is truly geometric, not biased by x-stretch.
+      let cx = 0, cy = 0;
+      let bestMinD2 = -1;
+      for (let tries = 0; tries < 6; tries++) {
+        const tcx = rnd(0.08, 0.92);
+        const tcy = rnd(0.08, 0.92);
+        const tcxW = tcx * aspect;
+        let minD2 = Infinity;
+        for (const L of lanterns) {
+          const dx = tcxW - L.x;
+          const dy = tcy - L.y;
+          const d2 = dx * dx + dy * dy;
+          if (d2 < minD2) minD2 = d2;
+        }
+        if (minD2 > bestMinD2) {
+          bestMinD2 = minD2;
+          cx = tcx;
+          cy = tcy;
+        }
+      }
+
+      // Softer than collision ripples — ambient, not eventful.
+      const ampRaw = rnd(0.006, 0.015);
+      const amp    = ampRaw * wallFade(cx, cy);
+      if (amp < 1e-4) return;
+      if (ripples.length >= MAX_RIPPLES) ripples.shift();
+      const lambda = rnd(0.10, 0.24);
+      const v      = rnd(0.25, 0.65);
+      const decay  = rnd(1.3, 2.6);
+      const sigma0 = rnd(0.14, 0.26);
+      ripples.push({ cx, cy, birth: now, amp, lambda, v, decay, sigma0 });
+    }
+
+    let nextAmbientAt = performance.now() +
+      AMBIENT_RIPPLE_MIN_MS + Math.random() * (AMBIENT_RIPPLE_MAX_MS - AMBIENT_RIPPLE_MIN_MS);
+
+    // Sustained-contact state. Each entry encodes a pair (i, j) with i < j
+    // as `i * MAX_LANTERNS + j`. Membership means "these two are currently
+    // overlapping, and the initial collision event has already fired".
+    // Frames where a pair is in this set do only geometric correction —
+    // no elastic bounce, no separation kick, no ripple/audio event.
+    const inContact = new Set<number>();
+
+    // --- Current field ---
+    // Curl of a potential that is WINDOWED to zero at the pool walls.
+    //
+    // The plain potential (four sinusoids) is not zero-mean when finite-
+    // differenced over a finite, non-periodic domain: ∫(dP/dx)dx from
+    // x=0 to x=aspect = P(aspect, y) - P(0, y), which is nonzero in general.
+    // That residual shows up as a tiny-but-systematic +y drift (measured
+    // vy_mean ≈ +0.045 across all lanterns), which over tens of seconds
+    // parks every lantern against the y=1 wall.
+    //
+    // Multiplying by W(x,y) = sin(πx/aspect) · sin(πy) forces P to zero
+    // at all four walls. The mean of dP/dx over the pool is then exactly
+    // zero by FTC, killing the drift. Side benefit: flow naturally fades
+    // to zero at walls, so lanterns aren't dragged into them — the wall
+    // repel is only there as a safety net against residual momentum.
+    //
+    // Wall repel is applied separately in stepPhysics as an acceleration
+    // (not mixed into this target), so cushion-boundary accumulation
+    // doesn't reappear.
+    function currentAt(x: number, y: number, t: number): [number, number] {
+      const pot = (px: number, py: number) => {
+        const w = Math.sin(Math.PI * px / aspect) * Math.sin(Math.PI * py);
+        if (w <= 0) return 0;
+        return w * (
+          Math.sin(px * 2.4 + t * 0.35) * Math.cos(py * 2.1 - t * 0.30) +
+          0.55 * Math.sin((px + py) * 1.3 + t * 0.22) +
+          0.30 * Math.cos(px * 3.5 - py * 2.8 + t * 0.28) +
+          0.40 * Math.sin(px * 5.7 - t * 0.42) * Math.cos(py * 5.2 + t * 0.38)
+        );
+      };
+      const eps = 0.01;
+      const dPdy = (pot(x, y + eps) - pot(x, y - eps)) / (2 * eps);
+      const dPdx = (pot(x + eps, y) - pot(x - eps, y)) / (2 * eps);
+      return [dPdy * INNER_NOISE_GAIN, -dPdx * INNER_NOISE_GAIN];
+    }
+
+    // --- Resize ---
+    let aspect = 1.0;
+    function resize() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const rect = canvas!.getBoundingClientRect();
+      const w = Math.max(1, Math.floor(rect.width * dpr));
+      const h = Math.max(1, Math.floor(rect.height * dpr));
+      if (canvas!.width !== w || canvas!.height !== h) {
+        canvas!.width = w;
+        canvas!.height = h;
+        gl!.viewport(0, 0, w, h);
+      }
+      aspect = canvas!.width / canvas!.height;
+    }
+    resize();
+    lanterns = placeLanterns(LANTERN_COUNT, aspect);
+
+    window.addEventListener('resize', resize);
+
+    // --- Pause ---
+    let paused = false;
+    let pausedAt = 0;
+    let pausedOffset = 0;
+    const onPause = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { paused: boolean };
+      const now = performance.now();
+      if (detail?.paused && !paused) {
+        paused = true;
+        pausedAt = now;
+        bellSynth.suspend();
+      } else if (!detail?.paused && paused) {
+        paused = false;
+        pausedOffset += now - pausedAt;
+        bellSynth.resume();
+      }
+    };
+    window.addEventListener('stage:pause', onPause);
+
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    // --- Audio ---
+    // Bell synth is created eagerly but stays silent until wake() succeeds
+    // in a user gesture handler. `strike()` is a safe no-op before wake().
+    const bellSynth = new ModalBellSynth();
+    const hintEl = canvas!.parentElement?.querySelector<HTMLElement>('[data-audio-hint]') ?? null;
+
+    const onPointerDown = () => {
+      // Every pointerdown is a chance to wake up; wake() is idempotent.
+      bellSynth.wake().then(() => {
+        if (bellSynth.ready && hintEl) hintEl.classList.add('awake');
+      });
+    };
+    if (!reduced) {
+      canvas!.addEventListener('pointerdown', onPointerDown);
+    } else {
+      // Reduced-motion: no collisions ever fire → no audio → hide the hint.
+      hintEl?.classList.add('awake');
+    }
+
+    let rafId = 0;
+    let aborted = false;
+    const startTime = performance.now();
+    let lastFrameWall = startTime;
+
+    // --- Physics step (lanterns: current → integrate → bounce → collide) ---
+    function stepPhysics(dt: number, t: number, now: number) {
+      // Frame-rate-independent damping. pow(0.985, 60) ≈ 0.40 for ref 60fps.
+      const dampThisStep = Math.pow(VEL_DAMPING, dt * 60);
+      // Per-frame strike budget. Caps audio even when many pairs transition
+      // to first-contact on the same frame (e.g. a small pile settling).
+      let strikeBudget = MAX_STRIKES_PER_FRAME;
+
+      // 1. Apply flow target, wall repel force, integrate.
+      //
+      // Flow target (curl-noise) is applied via first-order relaxation —
+      // velocity eases toward the current's value. That's fine for the
+      // interior because the noise field has no steady-state gradient
+      // that would trap things.
+      //
+      // Wall repel is an ACCELERATION, not a target velocity. Target-
+      // velocity walls collect lanterns at the cushion's inner edge (the
+      // first rewrite of this field had exactly that bug). An acceleration
+      // kicks a lantern inward and then stops acting once it's past the
+      // threshold — no equilibrium line, no pile.
+      for (const L of lanterns) {
+        const [cx, cy] = currentAt(L.x, L.y, t);
+        L.vx = L.vx * dampThisStep + (cx - L.vx) * VEL_FOLLOW * dt * 60;
+        L.vy = L.vy * dampThisStep + (cy - L.vy) * VEL_FOLLOW * dt * 60;
+
+        const dL = L.x, dR = aspect - L.x, dB = L.y, dT = 1 - L.y;
+        if (dL < WALL_REPEL_THICK) L.vx += WALL_REPEL_ACCEL * (1 - dL / WALL_REPEL_THICK) * dt;
+        if (dR < WALL_REPEL_THICK) L.vx -= WALL_REPEL_ACCEL * (1 - dR / WALL_REPEL_THICK) * dt;
+        if (dB < WALL_REPEL_THICK) L.vy += WALL_REPEL_ACCEL * (1 - dB / WALL_REPEL_THICK) * dt;
+        if (dT < WALL_REPEL_THICK) L.vy -= WALL_REPEL_ACCEL * (1 - dT / WALL_REPEL_THICK) * dt;
+
+        L.x += L.vx * dt;
+        L.y += L.vy * dt;
+      }
+
+      // 2. Wall bounces (hard: reverse normal velocity, clamp inside).
+      for (const L of lanterns) {
+        if (L.x < L.radius) {
+          L.x = L.radius;
+          if (L.vx < 0) L.vx = -L.vx;
+        }
+        if (L.x > aspect - L.radius) {
+          L.x = aspect - L.radius;
+          if (L.vx > 0) L.vx = -L.vx;
+        }
+        if (L.y < L.radius) {
+          L.y = L.radius;
+          if (L.vy < 0) L.vy = -L.vy;
+        }
+        if (L.y > 1 - L.radius) {
+          L.y = 1 - L.radius;
+          if (L.vy > 0) L.vy = -L.vy;
+        }
+      }
+
+      // 3. Lantern-lantern collisions (O(N²); at N=45 that's 990 pair
+      // checks — ~10µs of JS, well below budget).
+      //
+      // Each pair is treated as a simple state machine:
+      //   - not overlapping, not in set  → nothing to do
+      //   - not overlapping, was in set  → clear set (contact ended)
+      //   - overlapping, not in set      → NEW contact: geometry + elastic
+      //                                    + separation kick + ripple event
+      //   - overlapping, was in set      → SUSTAINED: only geometry correct
+      //
+      // Separated-but-near pairs additionally contribute to each lantern's
+      // targetDim — anticipation dim before a strike. Reset before scan;
+      // proximityDim itself eases toward this target later in frame().
+      for (const L of lanterns) L.targetDim = 0;
+
+      for (let i = 0; i < lanterns.length; i++) {
+        for (let j = i + 1; j < lanterns.length; j++) {
+          const a = lanterns[i], b = lanterns[j];
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const d2 = dx * dx + dy * dy;
+          const minD = a.radius + b.radius;
+          const pairKey = i * MAX_LANTERNS + j;
+
+          if (d2 >= minD * minD) {
+            // Separated now. Clear any lingering contact flag.
+            if (inContact.has(pairKey)) inContact.delete(pairKey);
+
+            // Proximity-dim: for pairs that are close AND actively
+            // converging, raise each lantern's proximityDim in step with
+            // how close the gap is to closing. Gate on approachV > 0 so
+            // a drifting-apart pair (post-strike or near-miss past
+            // nearest point) doesn't dim.
+            const dimRange = minD * 1.0;  // dim zone ≈ one radius-sum
+            const d = Math.sqrt(d2);
+            const gap = d - minD;
+            if (gap < dimRange) {
+              const nx = dx / d;
+              const ny = dy / d;
+              const approachV = (a.vx - b.vx) * nx + (a.vy - b.vy) * ny;
+              if (approachV > 0) {
+                const t = 1 - gap / dimRange;
+                const sm = t * t * (3 - 2 * t);
+                if (sm > a.targetDim) a.targetDim = sm;
+                if (sm > b.targetDim) b.targetDim = sm;
+              }
+            }
+            continue;
+          }
+
+          const d = Math.sqrt(d2);
+          if (d < 1e-6) continue;  // pathological degenerate
+          const nx = dx / d;
+          const ny = dy / d;
+          const overlap = minD - d;
+
+          // Geometric correction: always push apart by half + tiny buffer.
+          // Small buffer keeps integration from immediately re-overlapping
+          // and also prevents successive pile-members from zero-distance
+          // stacking.
+          const push = overlap * 0.5 + 0.0003;
+          a.x -= nx * push;
+          a.y -= ny * push;
+          b.x += nx * push;
+          b.y += ny * push;
+
+          if (inContact.has(pairKey)) {
+            // Sustained contact. Two things happen here:
+            //   (a) Geometric correction — already applied above.
+            //   (b) Continuous contact constraint — if they're still trying
+            //       to compress into each other (approach > 0 along the
+            //       normal), apply a mass-weighted inelastic merge that
+            //       equalizes their normal velocities. Tangential motion
+            //       is untouched, so lanterns can slide around in a pile.
+            //
+            // This is what real solvers (Box2D, matter.js, PhysX) do on
+            // every pass for every resting contact. Without it, ambient
+            // current + damping keep injecting compressive velocity into
+            // packed neighbors forever — they have no way to "notice" and
+            // respond. The result is the pile instability we were seeing.
+            const aNs = a.vx * nx + a.vy * ny;
+            const bNs = b.vx * nx + b.vy * ny;
+            if (aNs - bNs > 0) {
+              const mA = a.radius * a.radius;
+              const mB = b.radius * b.radius;
+              const common = (mA * aNs + mB * bNs) / (mA + mB);
+              a.vx += (common - aNs) * nx;
+              a.vy += (common - aNs) * ny;
+              b.vx += (common - bNs) * nx;
+              b.vy += (common - bNs) * ny;
+            }
+            continue;
+          }
+
+          // First frame of contact: compute elastic bounce on the normal,
+          // guarantee minimum separation speed, emit an event ripple.
+          const aN = a.vx * nx + a.vy * ny;
+          const bN = b.vx * nx + b.vy * ny;
+          const approach = aN - bN;
+
+          // Mark as in contact regardless of approach sign — ensures we
+          // won't re-fire this pair's collision event every frame even if
+          // they were tangentially grazing (approach ≤ 0) rather than
+          // head-on. The flag clears as soon as they physically separate.
+          inContact.add(pairKey);
+
+          if (approach <= 0) continue;  // glancing / already separating
+
+          // Elastic collision on the normal axis; mass ∝ r² (2D disc).
+          const mA = a.radius * a.radius;
+          const mB = b.radius * b.radius;
+          const mT = mA + mB;
+          const aN_new = (aN * (mA - mB) + 2 * mB * bN) / mT;
+          const bN_new = (bN * (mB - mA) + 2 * mA * aN) / mT;
+          a.vx += (aN_new - aN) * nx;
+          a.vy += (aN_new - aN) * ny;
+          b.vx += (bN_new - bN) * nx;
+          b.vy += (bN_new - bN) * ny;
+
+          // Events + separation kick fire only for non-glancing impacts.
+          // Soft grazes fall through to sustained-contact handling next
+          // frame, which won't re-inject energy.
+          if (approach > COLLISION_RIPPLE_THRESHOLD) {
+            // Guarantee outward normal speed ≥ MIN_SEP_SPEED so real
+            // impacts don't hang at grinding-low speed.
+            const aAway = -(a.vx * nx + a.vy * ny);
+            if (aAway < MIN_SEP_SPEED) {
+              const boost = MIN_SEP_SPEED - aAway;
+              a.vx -= nx * boost;
+              a.vy -= ny * boost;
+            }
+            const bAway = b.vx * nx + b.vy * ny;
+            if (bAway < MIN_SEP_SPEED) {
+              const boost = MIN_SEP_SPEED - bAway;
+              b.vx += nx * boost;
+              b.vy += ny * boost;
+            }
+
+            const cxR = a.x + nx * a.radius;
+            const cyR = a.y + ny * a.radius;
+            // Shared impact-strength curve: ripple amp, lantern flash,
+            // and bell velocity all consume this `vel` so the three
+            // channels of one event agree. Concave (pow 2.5) on a narrow
+            // window (0.05 above threshold) — threshold-grazes read
+            // near-silent/dim, solid hits near full strength.
+            const norm = Math.min(1, Math.max(0,
+              (approach - COLLISION_RIPPLE_THRESHOLD) / 0.05));
+            const vel = Math.pow(norm, 2.5);
+            // Tiny floor (0.002) keeps faint ripples from vanishing.
+            const amp = 0.002 + vel * 0.028;
+            spawnCollisionRipple(cxR / aspect, cyR, amp, now);
+
+            // Flash pulse, per lantern. Amplitude tracks momentum but
+            // via a √-compressed mass term so small-lantern collisions
+            // still register visibly (a linear impulse ratio buries
+            // small-small hits at ~10% of a big-big hit, which reads as
+            // "nothing happened"). Not gated by audio cooldown/budget —
+            // eye reads continuous micro-pulses cleanly where ear would
+            // chatter.
+            const sizeScale = Math.sqrt(
+              (a.radius + b.radius) / (2 * MAX_RADIUS));
+            const flashAmt = vel * sizeScale * 1.5;
+            a.flash = Math.min(1, a.flash + flashAmt);
+            b.flash = Math.min(1, b.flash + flashAmt);
+
+            // Bell strikes. Each lantern enforces its own cooldown so a
+            // single bowl caught in a brief cluster doesn't chatter; the
+            // frame budget caps the total even if many distinct lanterns
+            // would strike at once.
+            if (bellSynth.ready) {
+              const aCan = strikeBudget > 0 && now - a.lastStrikeAt > STRIKE_COOLDOWN_MS;
+              const bCan = strikeBudget > 0 && now - b.lastStrikeAt > STRIKE_COOLDOWN_MS;
+              if (aCan) {
+                const sizeA = (a.radius - MIN_RADIUS) / (MAX_RADIUS - MIN_RADIUS);
+                bellSynth.strike({ pitch: a.pitch, velocity: vel * 0.55, size: sizeA });
+                a.lastStrikeAt = now;
+                strikeBudget--;
+              }
+              if (bCan && strikeBudget > 0) {
+                const sizeB = (b.radius - MIN_RADIUS) / (MAX_RADIUS - MIN_RADIUS);
+                bellSynth.strike({ pitch: b.pitch, velocity: vel * 0.55, size: sizeB });
+                b.lastStrikeAt = now;
+                strikeBudget--;
+              }
+            }
+          }
+        }
+      }
+
+      // 4. Advect ripple centers by the flow field.
+      //
+      // Ripples are analytic wave packets in the shader — they don't know
+      // about water currents. We fake it by moving the CENTER of each
+      // packet by the local flow velocity each frame. Reads as "the
+      // ripple is being carried by the water". Flow is in world units,
+      // ripple cx/cy are in UV — divide x by aspect to convert back.
+      for (const r of ripples) {
+        const [fvx, fvy] = currentAt(r.cx * aspect, r.cy, t);
+        r.cx = Math.max(0, Math.min(1, r.cx + (fvx / aspect) * dt));
+        r.cy = Math.max(0, Math.min(1, r.cy + fvy * dt));
+      }
+
+      // 5. Velocity safety cap. Nothing should push velocities anywhere near
+      // MAX_SPEED under normal tuning; this is a guardrail against edge
+      // cases (mass-ratio quirks, multi-body pile kicks) that could
+      // otherwise let a single lantern fly at escape velocity.
+      const maxV2 = MAX_SPEED * MAX_SPEED;
+      for (const L of lanterns) {
+        const v2 = L.vx * L.vx + L.vy * L.vy;
+        if (v2 > maxV2) {
+          const inv = MAX_SPEED / Math.sqrt(v2);
+          L.vx *= inv;
+          L.vy *= inv;
+        }
+      }
+    }
+
+    function frame() {
+      if (aborted) return;
+      if (!reduced) rafId = requestAnimationFrame(frame);
+
+      const wallNow = performance.now();
+      let dt = (wallNow - lastFrameWall) / 1000;
+      lastFrameWall = wallNow;
+      // Cap dt so tab-switch or debugger pauses don't make physics jump.
+      if (dt > 0.1) dt = 0.1;
+      if (paused) dt = 0;
+
+      const simNow = paused ? pausedAt : (wallNow - pausedOffset);
+      const t = (simNow - startTime) / 1000;
+
+      if (!paused) {
+        stepPhysics(dt, t, simNow);
+
+        // Ambient pump ripples — independent of collisions, sparser and
+        // softer. Represents the water pump's residual agitation.
+        if (simNow >= nextAmbientAt) {
+          spawnAmbientRipple(simNow);
+          nextAmbientAt = simNow +
+            AMBIENT_RIPPLE_MIN_MS + Math.random() * (AMBIENT_RIPPLE_MAX_MS - AMBIENT_RIPPLE_MIN_MS);
+        }
+
+        // Retire old ripples.
+        while (ripples.length > 0 && (simNow - ripples[0].birth) / 1000 > RIPPLE_LIFETIME) {
+          ripples.shift();
+        }
+      }
+
+      // Decay per-lantern flash. τ ≈ 340ms — a full flash falls to ~0.37
+      // at 340ms and ~0.05 at 1 s. Slower than earlier 180ms tuning so
+      // the pulse actually registers as a perceivable "bloom" rather
+      // than a sub-blink. dt=0 while paused freezes the flash.
+      const flashDecay = Math.exp(-dt / 0.34);
+      for (const L of lanterns) L.flash *= flashDecay;
+
+      // Relax proximityDim toward its per-frame target. Without this
+      // the dim snaps whenever a pair's approach-velocity sign flips
+      // (the binary approachV > 0 gate in the pair loop), producing
+      // visible flicker at near-miss crossings and a hard cut on
+      // contact. τ ≈ 200ms reads as a gentle "held breath" fade.
+      const dimAlpha = 1 - Math.exp(-dt / 0.20);
+      for (const L of lanterns) L.proximityDim += (L.targetDim - L.proximityDim) * dimAlpha;
+
+      // Fill lantern buffer (x in UV = x_world / aspect). Intensity is
+      // dimmed by proximityDim for pre-strike anticipation, but the
+      // dim is masked (1 - flash) so the flash punch isn't eaten by
+      // lingering dim on the release side: flash drives the display
+      // toward full brightness, dim smoothly re-engages only after
+      // flash has faded.
+      for (let i = 0; i < 64; i++) {
+        if (i < lanterns.length) {
+          const L = lanterns[i];
+          const effectiveDim = L.proximityDim * (1 - L.flash);
+          const dimFactor = 1 - effectiveDim * 0.55;
+          lanternBuf[i * 4 + 0] = L.x / aspect;
+          lanternBuf[i * 4 + 1] = L.y;
+          lanternBuf[i * 4 + 2] = L.intensity * dimFactor * (1 + L.flash * 2.5);
+          lanternBuf[i * 4 + 3] = L.radius;
+        } else {
+          lanternBuf[i * 4 + 0] = 0;
+          lanternBuf[i * 4 + 1] = 0;
+          lanternBuf[i * 4 + 2] = 0;
+          lanternBuf[i * 4 + 3] = 0.01;  // nonzero to avoid div by zero
+        }
+      }
+
+      // Fill ripple buffers.
+      for (let i = 0; i < MAX_RIPPLES; i++) {
+        if (i < ripples.length) {
+          const r = ripples[i];
+          const age = (simNow - r.birth) / 1000;
+          rippleBuf[i * 4 + 0] = r.cx;
+          rippleBuf[i * 4 + 1] = r.cy;
+          rippleBuf[i * 4 + 2] = age;
+          rippleBuf[i * 4 + 3] = r.amp;
+          rippleShapeBuf[i * 4 + 0] = r.lambda;
+          rippleShapeBuf[i * 4 + 1] = r.v;
+          rippleShapeBuf[i * 4 + 2] = r.decay;
+          rippleShapeBuf[i * 4 + 3] = r.sigma0;
+        } else {
+          rippleBuf[i * 4 + 0] = 0;
+          rippleBuf[i * 4 + 1] = 0;
+          rippleBuf[i * 4 + 2] = 0;
+          rippleBuf[i * 4 + 3] = 0;
+          rippleShapeBuf[i * 4 + 0] = 0;
+          rippleShapeBuf[i * 4 + 1] = 0;
+          rippleShapeBuf[i * 4 + 2] = 1;
+          rippleShapeBuf[i * 4 + 3] = 1;
+        }
+      }
+
+      gl!.uniform2f(uResolution, canvas!.width, canvas!.height);
+      gl!.uniform1f(uTime, t);
+      gl!.uniform1i(uLanternCount, lanterns.length);
+      gl!.uniform4fv(uLanterns, lanternBuf);
+      gl!.uniform1i(uRippleCount, ripples.length);
+      gl!.uniform4fv(uRipples, rippleBuf);
+      gl!.uniform4fv(uRippleShape, rippleShapeBuf);
+      gl!.drawArrays(gl!.TRIANGLE_STRIP, 0, 4);
+    }
+
+    if (reduced) {
+      // Curated still: two decorative ripples to hint at the mechanism.
+      const fakeNow = startTime + 2000;
+      ripples.push({
+        cx: 0.30, cy: 0.35, birth: fakeNow - 800, amp: 0.022,
+        lambda: 0.13, v: 0.55, decay: 1.6, sigma0: 0.16,
+      });
+      ripples.push({
+        cx: 0.62, cy: 0.58, birth: fakeNow - 1800, amp: 0.014,
+        lambda: 0.21, v: 0.32, decay: 2.4, sigma0: 0.22,
+      });
+    }
+    frame();
+
+    currentCleanup = () => {
+      aborted = true;
+      cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', resize);
+      window.removeEventListener('stage:pause', onPause);
+      canvas!.removeEventListener('pointerdown', onPointerDown);
+      bellSynth.dispose();
+      gl!.deleteBuffer(vbo);
+      gl!.deleteProgram(program);
+      gl!.deleteShader(vs);
+      gl!.deleteShader(fs);
+      const loseExt = gl!.getExtension('WEBGL_lose_context');
+      loseExt?.loseContext();
+      currentCleanup = null;
+    };
+    document.addEventListener('astro:before-swap', () => currentCleanup?.(), { once: true });
+  }
+
+  init();
+  document.addEventListener('astro:page-load', init);
+</script>
+
+<style>
+  .wrap {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    background: #020306;
+  }
+  .wrap canvas {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  /* Audio wake hint — bottom-left of the stage, pairs with stage-pause at
+     bottom-right. Fades out once the user has activated audio. */
+  .audio-hint {
+    position: absolute;
+    bottom: 1.2rem;
+    left: 1.4rem;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.22em;
+    color: rgba(230, 226, 214, 0.55);
+    pointer-events: none;
+    user-select: none;
+    transition: opacity 700ms ease;
+  }
+  .audio-hint.awake {
+    opacity: 0;
+  }
+</style>
