@@ -104,44 +104,29 @@ float surfaceHeight(vec2 p, float t) {
   return h;
 }
 
-vec2 surfaceGradient(vec2 p, float t) {
-  float l = surfaceHeight(p - vec2(EPS, 0.0), t);
-  float r = surfaceHeight(p + vec2(EPS, 0.0), t);
-  float d = surfaceHeight(p - vec2(0.0, EPS), t);
-  float u = surfaceHeight(p + vec2(0.0, EPS), t);
-  return vec2(r - l, u - d) / (2.0 * EPS);
-}
-
-float surfaceLaplacian(vec2 p, float t) {
-  float c = surfaceHeight(p, t);
-  float l = surfaceHeight(p - vec2(EPS, 0.0), t);
-  float r = surfaceHeight(p + vec2(EPS, 0.0), t);
-  float d = surfaceHeight(p - vec2(0.0, EPS), t);
-  float u = surfaceHeight(p + vec2(0.0, EPS), t);
-  return (l + r + d + u - 4.0 * c) / (EPS * EPS);
-}
-
 void main() {
   vec2 aspect = vec2(u_resolution.x / u_resolution.y, 1.0);
   vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);
   vec2 p = uv * aspect;
   float t = u_time;
 
-  // ---- Caustics with dispersion ----
-  // Caustic strength cut hard — earlier passes had the pool lit up with
-  // bright bands even in rest, which fought the lantern halos and made
-  // the water feel "processed". Now the caustic is a subtle whisper on
-  // the water surface; you read it more as "the water is alive" than
-  // as a distinct optical feature. Per-channel scales roughly halved
-  // from the previous tune.
-  vec2 g = surfaceGradient(p, t);
-  float lapR = surfaceLaplacian(p + g *  0.005, t);
-  float lapG = surfaceLaplacian(p,              t);
-  float lapB = surfaceLaplacian(p - g *  0.005, t);
+  // ---- Caustics (single-sample laplacian, per-channel scale) ----
+  // Previous version sampled 3 position-shifted laplacians for chromatic
+  // dispersion — 19 surfaceHeight() calls per pixel, each looping through
+  // all active ripples. Collapsed to one 5-tap stencil (4x cheaper at
+  // 24-ripple load) and kept chromatic flavor via per-channel multiplier
+  // only. The position-shift dispersion was invisible once caustic blend
+  // dropped to 0.18 anyway.
+  float hC = surfaceHeight(p,                       t);
+  float hL = surfaceHeight(p - vec2(EPS, 0.0),      t);
+  float hR = surfaceHeight(p + vec2(EPS, 0.0),      t);
+  float hD = surfaceHeight(p - vec2(0.0, EPS),      t);
+  float hU = surfaceHeight(p + vec2(0.0, EPS),      t);
+  float lap = (hL + hR + hD + hU - 4.0 * hC) / (EPS * EPS);
   vec3 causticPattern = clamp(vec3(
-    1.0 - lapR * 0.0013,
-    1.0 - lapG * 0.0014,
-    1.0 - lapB * 0.0016
+    1.0 - lap * 0.0013,
+    1.0 - lap * 0.0014,
+    1.0 - lap * 0.0016
   ), 0.0, 2.0);
 
   // ---- Base water ----
