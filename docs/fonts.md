@@ -52,7 +52,6 @@
 |---|---|---|
 | [src/assets/fonts/*.ttf](../src/assets/fonts/) | 源 TTF（不部署，可 gitignore） | 手放 |
 | [src/styles/tokens.css](../src/styles/tokens.css) | `--font-*` CSS 变量，**active face 的唯一来源** | 手写 |
-| [src/styles/fonts.css](../src/styles/fonts.css) | 占位注释，不再 import | 手写 |
 | [src/layouts/BaseLayout.astro](../src/layouts/BaseLayout.astro) | dev 模式下条件链 `fonts-dev.css` | 手写 |
 | [public/fonts-dev.css](../public/fonts-dev.css) | dev 用的 `@font-face` | **由 `build-fonts.py dev` 生成** |
 | [public/fonts/dev/*.woff2](../public/fonts/dev/) | dev 单文件 WOFF2 | **由 `build-fonts.py dev` 生成** |
