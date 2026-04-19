@@ -118,7 +118,7 @@ const ogImage = image ? new URL(image, Astro.site).toString() : undefined;
 
       /* === Entry animations ===
          Opt in with class="enter" (fade + lift) or "enter-soft" (fade only).
-         Stagger via inline style="--i: N;" — each step delays 80ms.  */
+         Stagger via inline style="--i: N;" — each step delays 200ms.  */
       @keyframes enter-up {
         from { opacity: 0; transform: translateY(8px); }
         to   { opacity: 1; transform: translateY(0); }
@@ -129,13 +129,13 @@ const ogImage = image ? new URL(image, Astro.site).toString() : undefined;
       }
       .enter {
         opacity: 0;
-        animation: enter-up 700ms cubic-bezier(0.22, 1, 0.36, 1) both;
-        animation-delay: calc(var(--i, 0) * 80ms + 120ms);
+        animation: enter-up 1800ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        animation-delay: calc(var(--i, 0) * 200ms + 300ms);
       }
       .enter-soft {
         opacity: 0;
-        animation: enter-soft 900ms ease-out both;
-        animation-delay: calc(var(--i, 0) * 80ms + 120ms);
+        animation: enter-soft 2200ms ease-out both;
+        animation-delay: calc(var(--i, 0) * 200ms + 300ms);
       }
       @media (prefers-reduced-motion: reduce) {
         .enter, .enter-soft { opacity: 1; animation: none; }
