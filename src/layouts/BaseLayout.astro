@@ -141,6 +141,25 @@ const ogImage = image ? new URL(image, Astro.site).toString() : undefined;
         .enter, .enter-soft { opacity: 1; animation: none; }
       }
 
+      /* === View-transition pacing ===
+         Astro's default transition is 180ms with a snappy ease-in-out,
+         which feels jarring next to the 1800ms .enter reveal. Unify:
+         same easing as .enter, longer duration for the fade-out of the
+         outgoing page so navigations feel like slow dissolves, not cuts.
+         The fade-in of the new page is kept short — .enter takes over
+         from there for the actual reveal, so doubling up would just
+         make things muddy.  */
+      ::view-transition-old(stage),
+      ::view-transition-old(column) {
+        animation-duration: 600ms;
+        animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      ::view-transition-new(stage),
+      ::view-transition-new(column) {
+        animation-duration: 300ms;
+        animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+      }
+
       /* === Write-on underline ===
          Add class="writ" to any link you want to have the accent-colored
          underline draw left→right on hover. Scoped opt-in (don't apply
