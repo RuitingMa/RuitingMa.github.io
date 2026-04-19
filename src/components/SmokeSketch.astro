@@ -33,8 +33,10 @@
     let w = 0, h = 0;
 
     // Grid resolution, preserving canvas aspect ratio. Recomputed on
-    // resize. The offscreen buffer is reallocated to match.
-    const TARGET_CELLS = 26000;
+    // resize. The offscreen buffer is reallocated to match. 18k cells
+    // (was 26k) — the upscale blit hides the coarser grid, and both
+    // passes (velocity + advection) scale linearly in cell count.
+    const TARGET_CELLS = 18000;
     let GW = 0, GH = 0;
     let cellW = 0, cellH = 0;
 
@@ -83,9 +85,16 @@
     }
     resize();
 
+    // Integer hash (xorshift-style) — replaces the previous sin-based hash.
+    // Called ~32×/cell on the velocity pass (fbm → noise → hash), so at
+    // 18k cells that's ~576k Math.sin calls/frame. Integer ops are 5-10×
+    // faster in V8. `| 0` floors into int32; the shifts and multiplies
+    // stay in SMI range until the final normalize.
     const hash = (x: number, y: number) => {
-      const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
-      return s - Math.floor(s);
+      let h = ((x | 0) * 374761393 + (y | 0) * 668265263) | 0;
+      h = Math.imul(h ^ (h >>> 13), 1274126177);
+      h = h ^ (h >>> 16);
+      return (h >>> 0) / 4294967295;
     };
     const smoothstep = (t: number) => t * t * (3 - 2 * t);
     const noise = (x: number, y: number) => {
