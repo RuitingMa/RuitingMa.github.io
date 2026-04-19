@@ -1,0 +1,94 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import ClinamenSketch from '../../components/ClinamenSketch.astro';
+---
+
+<BaseLayout title="Clinamen">
+  <ClinamenSketch slot="stage" />
+
+  <article class="tint-rust">
+    <p class="breadcrumb enter" style="--i: 0;"><a href="/" class="writ">← 眠海</a></p>
+
+    <h1 class="enter" style="--i: 1;">Clinamen</h1>
+    <p class="meta enter" style="--i: 2;">2026-04-19 · AUDIO · GENERATIVE</p>
+
+    <p class="enter" style="--i: 3;">
+      两千年前 Lucretius 替 Epicurus 翻译过一个词——clinamen，“偶微偏”。所以世界啊，你被如此设想：你诞生于一次次平行下落的虚空里原子的不可预测偏斜。没有偏斜，就不会有碰撞；没有碰撞，就不存在世界。
+    </p>
+    <p class="note enter" style="--i: 4;">
+      本作品在精神上取法 Céleste Boursier-Mougenot 2013 年于 Tate Britain 展出的装置 <em>clinamen v.3</em>。约 200 只白瓷碗浮在一方浅水池上，水泵在池底暗中搅动极慢的环流，碗与碗的相遇由水的兴致决定，偶然相撞处便溅出清脆的一响。整件作品的谱大概很难重写。
+    </p>
+    <p class="note enter" style="--i: 5;">
+      此屏上这一版换去瓷碗，换作河灯。水面的色散焦散借镜于真实的水，光掠过波动起伏的表面时，长波短波折射率之差令亮带两缘会分出暖芯冷边的光谱。所听之声源自相遇，所见之影亦然。
+    </p>
+    <p class="note enter" style="--i: 6;">
+      首次点击水面会唤醒声音。此后每一次认真的相遇都会同时成为钟响、涟漪与焦散——每盏灯的基频与其半径成反比，小灯高声，大碗低鸣，与钟鼎之理相符。
+    </p>
+  </article>
+</BaseLayout>
+
+<style>
+  .breadcrumb {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.25em;
+    opacity: 0.55;
+    font-size: 0.72rem;
+    margin: 0 0 4em;
+  }
+  .breadcrumb a {
+    text-decoration: none;
+  }
+  .breadcrumb a:hover {
+    color: var(--accent);
+  }
+  h1 {
+    font-family: var(--font-display);
+    font-size: 2.1rem;
+    font-weight: 400;
+    letter-spacing: 0.05em;
+    margin: 0 0 0.5em;
+    position: relative;
+    padding-left: 0.7em;
+    line-height: 1.25;
+  }
+  h1::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0.18em;
+    bottom: 0.22em;
+    width: 3px;
+    background: var(--accent);
+  }
+  .meta {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+    margin: 0 0 3em;
+  }
+  .cue {
+    font-family: var(--font-mono);
+    font-size: 0.82em;
+    letter-spacing: 0.08em;
+    padding: 0.14em 0.5em;
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    color: var(--accent);
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+  .note {
+    color: var(--fg-dim);
+    font-size: 0.92rem;
+  }
+  .note + .note {
+    margin-top: 1.1em;
+  }
+  em {
+    font-style: italic;
+    color: var(--fg);
+  }
+</style>

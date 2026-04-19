@@ -25,3 +25,9 @@ pnpm-debug.log*
 
 # local Claude Code config (launch.json is per-machine)
 .claude/
+
+# local-only artifacts — exist on disk but not part of the deployed site
+# archive/ holds pre-2023 Hexo drafts (kept for reference, not republished)
+# maintenance.html is the reusable "site under maintenance" cover page
+archive/
+maintenance.html
