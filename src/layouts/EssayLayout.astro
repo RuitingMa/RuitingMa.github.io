@@ -1,0 +1,234 @@
+---
+/*
+ * EssayLayout — long-form piece with a sticky reactive stage.
+ *
+ * Sections in the body marked <section data-cue="NAME"> are observed via
+ * IntersectionObserver. The "most visible" cue wins and is dispatched as
+ * a `stage:cue` event on the window; stage components (BeginSketch, …)
+ * listen for it and shift behavior. Same event-bus pattern as the
+ * existing `stage:pause` and `stage:heat` events.
+ */
+import BaseLayout from './BaseLayout.astro';
+
+interface Props {
+  title: string;
+  date: string;
+  kind: string;
+  summary: string;
+  tint?: 'plum' | 'moss' | 'rust' | 'mist' | 'dune';
+}
+
+const { title, date, kind, summary, tint } = Astro.props;
+const tintClass = tint ? `tint-${tint}` : '';
+---
+
+<BaseLayout title={title} description={summary}>
+  <slot name="stage" slot="stage" />
+
+  <article class:list={[tintClass]}>
+    <p class="breadcrumb enter" style="--i: 0;"><a href="/" class="writ">← 眠海</a></p>
+
+    <h1 class="enter" style="--i: 1;">{title}</h1>
+    <p class="meta enter" style="--i: 2;">{date} · {kind}</p>
+
+    <div class="body enter-soft" style="--i: 3;">
+      <slot />
+    </div>
+  </article>
+</BaseLayout>
+
+<script>
+  // Reading-line model: the cue of whichever data-cue section has most
+  // recently scrolled its top past the reading line (35% down the
+  // viewport) becomes active. When that section changes, we dispatch
+  // `stage:cue` on the window; stage components listen on the other
+  // side. Same event-bus convention as `stage:pause` / `stage:heat`.
+  //
+  // Why not IntersectionObserver-by-ratio? A short section saturates
+  // its visibility ratio faster than a tall one, so the tail of an
+  // essay wins even when most of the viewport shows the previous
+  // section. Reading-line picks by document order, which matches how
+  // scroll feels — you've "committed to" a section once its heading
+  // passes the line.
+  //
+  // Lifecycle matches the sketch components (ParticleSketch etc.):
+  // module-scope `currentCleanup` makes repeat init a no-op, and
+  // astro:before-swap tears down before the next page builds its own.
+
+  let currentCleanup: (() => void) | null = null;
+
+  function attach() {
+    if (currentCleanup) return;
+    const nodes = Array.from(document.querySelectorAll<HTMLElement>('[data-cue]'));
+    if (nodes.length === 0) return;
+
+    let current: string | null = null;
+    let rafPending = false;
+
+    function compute() {
+      rafPending = false;
+      // If we're pinned at the bottom of the document, force the last
+      // cue. Otherwise a short trailing section whose top never reaches
+      // the reading line (because scroll clamps first) would never
+      // activate. 4px slack absorbs sub-pixel and fractional-DPR layout.
+      const atBottom =
+        window.scrollY + window.innerHeight >=
+        document.documentElement.scrollHeight - 4;
+
+      let best: HTMLElement | null;
+      if (atBottom) {
+        best = nodes[nodes.length - 1];
+      } else {
+        // Pick the section with the largest top ≤ line — i.e., the last
+        // one whose heading has crossed the reading line. Before any
+        // section crosses (top of page), fall back to the first.
+        const line = window.innerHeight * 0.35;
+        best = null;
+        let bestTop = -Infinity;
+        for (const n of nodes) {
+          const top = n.getBoundingClientRect().top;
+          if (top <= line && top > bestTop) {
+            best = n;
+            bestTop = top;
+          }
+        }
+        if (!best) best = nodes[0];
+      }
+
+      const next = best.dataset.cue;
+      if (next && next !== current) {
+        current = next;
+        window.dispatchEvent(new CustomEvent('stage:cue', { detail: { cue: next } }));
+      }
+    }
+
+    function schedule() {
+      if (rafPending) return;
+      rafPending = true;
+      requestAnimationFrame(compute);
+    }
+
+    window.addEventListener('scroll', schedule, { passive: true });
+    window.addEventListener('resize', schedule);
+    compute();  // prime — fire the initial cue so the canvas starts right
+
+    currentCleanup = () => {
+      window.removeEventListener('scroll', schedule);
+      window.removeEventListener('resize', schedule);
+      currentCleanup = null;
+    };
+    document.addEventListener('astro:before-swap', () => currentCleanup?.(), { once: true });
+  }
+
+  attach();
+  document.addEventListener('astro:page-load', attach);
+</script>
+
+<style>
+  .breadcrumb {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.25em;
+    opacity: 0.55;
+    font-size: 0.72rem;
+    margin: 0 0 4em;
+  }
+  .breadcrumb a { text-decoration: none; }
+  .breadcrumb a:hover { color: var(--accent); }
+
+  h1 {
+    font-family: var(--font-display);
+    font-size: 2.1rem;
+    font-weight: 400;
+    letter-spacing: 0.05em;
+    margin: 0 0 0.5em;
+    position: relative;
+    padding-left: 0.7em;
+    line-height: 1.25;
+  }
+  h1::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0.18em;
+    bottom: 0.22em;
+    width: 3px;
+    background: var(--accent);
+  }
+
+  .meta {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+    margin: 0 0 3em;
+  }
+
+  /* Markdown renders each <section> we declared; apply spacing globally
+     because the author wrote raw HTML inside their .md file. */
+  .body :global(section) {
+    min-height: 72vh;
+    padding: 1.6em 0 2.2em;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+  .body :global(section + section) {
+    border-top: 1px solid var(--rule);
+  }
+  .body :global(section:last-child) {
+    /* The closing section wants generous quiet trailing beneath the last
+       line — reading ends, but the eye needs room to linger before the
+       page edge. Content stays centered in a normal-size box; the long
+       padding-bottom pushes the bottom of the section way below. */
+    min-height: 40vh;
+    padding-bottom: 35vh;
+  }
+  .body :global(h2) {
+    font-family: var(--font-display);
+    font-weight: 400;
+    font-size: 1.25rem;
+    letter-spacing: 0.08em;
+    margin: 0 0 1em;
+  }
+  .body :global(p) {
+    color: var(--fg-dim);
+    font-size: 0.96rem;
+    margin: 0.9em 0;
+  }
+  .body :global(p:first-child) { margin-top: 0; }
+  .body :global(p:last-child)  { margin-bottom: 0; }
+  .body :global(em) {
+    font-style: italic;
+    color: var(--fg);
+  }
+  .body :global(strong) {
+    font-weight: 500;
+    color: var(--fg);
+  }
+  .body :global(code) {
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    padding: 0.1em 0.35em;
+    background: rgba(230, 226, 214, 0.08);
+    border-radius: 2px;
+  }
+  .body :global(a) {
+    color: inherit;
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--accent) 55%, transparent);
+    text-underline-offset: 0.2em;
+  }
+  .body :global(a:hover) {
+    color: var(--accent);
+  }
+
+  @media (max-width: 860px) {
+    .body :global(section) {
+      min-height: 0;
+      padding: 1.6em 0;
+    }
+  }
+</style>

@@ -1,30 +1,32 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 import LobbySketch from '../components/LobbySketch.astro';
+import { getCollection } from 'astro:content';
 
+// Sketches remain hand-authored .astro pages (their layouts are bespoke,
+// so a shared template fights them). Listed here by hand — it's 3 entries.
 const sketches = [
-  {
-    slug: 'clinamen',
-    title: 'Clinamen',
-    date: '2026-04-20',
-    kind: 'AUDIO · GENERATIVE',
-    summary: '河灯散布于水面。',
-  },
-  {
-    slug: 'smoke',
-    title: 'Smoke',
-    date: '2026-04-19',
-    kind: 'GENERATIVE',
-    summary: '烟。',
-  },
-  {
-    slug: 'hello-world',
-    title: 'Flow Field',
-    date: '2026-04-18',
-    kind: 'GENERATIVE',
-    summary: '漂流点阵。',
-  },
+  { href: '/sketches/clinamen/',    title: 'Clinamen',   date: '2026-04-20', kind: 'AUDIO · GENERATIVE', summary: '河灯散布于水面。' },
+  { href: '/sketches/smoke/',       title: 'Smoke',      date: '2026-04-19', kind: 'GENERATIVE',         summary: '烟。' },
+  { href: '/sketches/hello-world/', title: 'Flow Field', date: '2026-04-18', kind: 'GENERATIVE',         summary: '漂流点阵。' },
 ];
+
+// Long-form essays come from the content collection.
+const essayEntries = await getCollection('essays');
+const essays = essayEntries.map((e) => ({
+  href: `/essays/${e.id}/`,
+  title: e.data.title,
+  date: e.data.date,
+  kind: e.data.kind,
+  summary: e.data.summary,
+}));
+
+// Date desc, tie-break by href so order is deterministic. Essays sort
+// before sketches on the same date because 'essays/' < 'sketches/'.
+const entries = [...sketches, ...essays].sort((a, b) => {
+  if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+  return a.href < b.href ? -1 : 1;
+});
 ---
 
 <BaseLayout title="眠海">
@@ -37,9 +39,9 @@ const sketches = [
     </header>
 
     <ul class="sketches">
-      {sketches.map((s, idx) => (
+      {entries.map((s, idx) => (
         <li class="enter" style={`--i: ${idx + 2};`}>
-          <a href={`/sketches/${s.slug}/`} data-heat-trigger>
+          <a href={s.href} data-heat-trigger>
             <div class="row">
               <span class="title">{s.title}</span>
               <span class="date">{s.date}</span>

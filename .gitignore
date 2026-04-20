@@ -23,6 +23,9 @@ pnpm-debug.log*
 # jetbrains setting folder
 .idea/
 
+# python bytecode cache from scripts/build-fonts.py
+__pycache__/
+
 # local Claude Code config (launch.json is per-machine)
 .claude/
 
