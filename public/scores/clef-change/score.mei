@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mei xmlns="http://www.music-encoding.org/ns/mei" meiversion="5.0">
+  <meiHead>
+    <fileDesc>
+      <titleStmt><title>Clef-change test — treble ↔ bass, with key modulation</title></titleStmt>
+      <pubStmt/>
+    </fileDesc>
+  </meiHead>
+  <music>
+    <body>
+      <mdiv>
+        <score>
+          <scoreDef meter.count="4" meter.unit="4" key.sig="0" midi.bpm="96">
+            <staffGrp>
+              <staffDef n="1" lines="5" clef.shape="G" clef.line="2"/>
+            </staffGrp>
+          </scoreDef>
+          <section>
+            <!-- Bar 1 — treble, C major -->
+            <measure n="1">
+              <staff n="1"><layer n="1">
+                <note pname="c" oct="5" dur="4"/>
+                <note pname="e" oct="5" dur="4"/>
+                <note pname="g" oct="5" dur="4"/>
+                <note pname="e" oct="5" dur="4"/>
+              </layer></staff>
+              <harm place="above" staff="1" tstamp="1" n="1">treble · C</harm>
+            </measure>
+
+            <!-- Bar 2 — switch to bass clef, G major (1 sharp), low voicing -->
+            <scoreDef key.sig="1s">
+              <staffGrp>
+                <staffDef n="1" lines="5" clef.shape="F" clef.line="4"/>
+              </staffGrp>
+            </scoreDef>
+            <measure n="2">
+              <staff n="1"><layer n="1">
+                <note pname="g" oct="2" dur="4"/>
+                <note pname="d" oct="3" dur="4"/>
+                <note pname="b" oct="2" dur="4"/>
+                <note pname="d" oct="3" dur="4"/>
+              </layer></staff>
+              <harm place="above" staff="1" tstamp="1" n="1">bass · G</harm>
+            </measure>
+
+            <!-- Bar 3 — back to treble, E♭ major (3 flats) -->
+            <scoreDef key.sig="3f">
+              <staffGrp>
+                <staffDef n="1" lines="5" clef.shape="G" clef.line="2"/>
+              </staffGrp>
+            </scoreDef>
+            <measure n="3">
+              <staff n="1"><layer n="1">
+                <note pname="e" oct="4" accid.ges="f" dur="4"/>
+                <note pname="g" oct="4" dur="4"/>
+                <note pname="b" oct="4" accid.ges="f" dur="4"/>
+                <note pname="e" oct="5" accid.ges="f" dur="4"/>
+              </layer></staff>
+              <harm place="above" staff="1" tstamp="1" n="1">treble · E♭</harm>
+            </measure>
+
+            <!-- Bar 4 — back to treble C major so the loop closes -->
+            <scoreDef key.sig="0"/>
+            <measure n="4">
+              <staff n="1"><layer n="1">
+                <note pname="c" oct="5" dur="4"/>
+                <note pname="g" oct="4" dur="4"/>
+                <note pname="e" oct="4" dur="4"/>
+                <note pname="c" oct="4" dur="4"/>
+              </layer></staff>
+              <harm place="above" staff="1" tstamp="1" n="1">treble · C</harm>
+            </measure>
+          </section>
+        </score>
+      </mdiv>
+    </body>
+  </music>
+</mei>

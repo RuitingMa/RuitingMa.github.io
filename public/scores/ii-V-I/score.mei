@@ -24,10 +24,10 @@
                 <note pname="b" oct="3" dur="4"/>
                 <note pname="d" oct="4" dur="4"/>
               </layer></staff>
-              <harm place="above" staff="1" tstamp="1">Dm7</harm>
-              <harm place="above" staff="1" tstamp="3">G7</harm>
-              <harm place="below" staff="1" tstamp="1">ii</harm>
-              <harm place="below" staff="1" tstamp="3">V7</harm>
+              <harm place="above" staff="1" tstamp="1" n="1">Dm7</harm>
+              <harm place="above" staff="1" tstamp="3" n="1">G7</harm>
+              <harm place="below" staff="1" tstamp="1" n="2">ii</harm>
+              <harm place="below" staff="1" tstamp="3" n="2">V7</harm>
             </measure>
 
             <!-- Bar 2: Cmaj7, whole note on the 3rd, suspended into air -->
@@ -35,8 +35,8 @@
               <staff n="1"><layer n="1">
                 <note pname="e" oct="4" dur="1"/>
               </layer></staff>
-              <harm place="above" staff="1" tstamp="1">Cmaj7</harm>
-              <harm place="below" staff="1" tstamp="1">I</harm>
+              <harm place="above" staff="1" tstamp="1" n="1">Cmaj7</harm>
+              <harm place="below" staff="1" tstamp="1" n="2">I</harm>
             </measure>
           </section>
         </score>
