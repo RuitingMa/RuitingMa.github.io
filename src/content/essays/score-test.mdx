@@ -1,8 +1,8 @@
 ---
-title: score test
+title: Score test
 date: "2026-04-19"
 kind: TEST
-summary: throwaway — verifies the Score component, MDX, looping, and scroll sync.
+summary: 临时页 —— 验证 Score 组件、MDX、loop 与滚动同步。
 tint: mist
 stage: begin
 ---
@@ -11,14 +11,22 @@ import Score from '../../components/Score.astro';
 
 <section data-cue="empty">
 
-A Score embedded below plays through once. Click the staff to start, click again to pause.
+下面嵌入的 Score 只播放一次。点击五线谱开始，再点一次暂停。
 
 <Score slug="twinkle" />
 
-Next is a short ii–V–I progression tagged `loop`. It keeps repeating until clicked off.
+接下来是一段打了 `loop` 标签的 ii–V–I，会一直循环直到再次点击。
 
 <Score slug="ii-V-I" loop />
 
-That's it.
+再来一个带转调的 loop —— C → D → B♭ → 回到 C。留意每次调号变化从轴上划过时，左侧冻结的谱号/调号区会淡入淡出切换到新调，而轴本身不动。
+
+<Score slug="modulating" loop />
+
+最后一个混合了谱号变化 —— treble/C → bass/G → treble/E♭ → treble/C。谱号或调号任一变动都会触发左侧的淡入淡出。
+
+<Score slug="clef-change" loop />
+
+就这些。
 
 </section>

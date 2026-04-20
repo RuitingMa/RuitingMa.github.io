@@ -71,7 +71,12 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
   .score-stage {
     position: relative;
     width: 100%;
-    height: var(--score-h, 200px);
+    /* Author-supplied `--score-h` is the preferred height on roomy
+       viewports; on narrower screens we shrink it proportionally so the
+       reserved header + playhead zone still fits with room for music.
+       The JS-side geometry reads this actual height and scales
+       HEADER_MAX_PX / PLAYHEAD_OFFSET_PX in step. */
+    height: min(var(--score-h, 200px), 45vw);
     overflow: hidden;
     cursor: grab;
     /* Prevent the browser's native touch-scrolling so our drag handler
@@ -202,46 +207,49 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
   .score-pan :global(svg .stem),
   .score-pan :global(svg .barLine),
   .score-pan :global(svg .harm),
-  .score-pan :global(svg .dynam) {
+  .score-pan :global(svg .dynam),
+  /* Mid-piece key-signature changes stay in the pan so readers see them
+     scroll past the playhead. Without these rules their glyphs keep
+     Verovio's default `color="black"` presentation attribute. */
+  .score-pan :global(svg .clef),
+  .score-pan :global(svg .keySig),
+  .score-pan :global(svg .meterSig) {
     fill: currentColor;
     stroke: currentColor;
   }
 
   /* === Active-note / active-harm glow ===============================
-     When a note (or chord symbol / functional label) is sounding, the
-     render loop in score-player.ts adds `.is-active` to every matching
-     element across all SVG copies. CSS here handles the visual:
-       - color shifts to the page's --accent
-       - a feathered drop-shadow stack simulates a soft glow
-       - an animation curves the glow from peak at attack to a dimmer
-         steady state (approximating B's "brightness decays during
-         sustain" feel)
-       - transitions on filter/color smooth the class-removal fade-out
-         so the note doesn't snap back when its sustain ends
-     Three drop-shadow layers give depth: tight + medium + wide,
-     creating the羽化 gradient from bright center to soft periphery. */
-  .score-pan :global(svg .note),
-  .score-pan :global(svg .harm) {
-    transition:
-      filter 500ms cubic-bezier(0.22, 1, 0.36, 1),
-      color 280ms ease-out;
-  }
+     score-player.ts adds `.is-active` to sounding notes + harms. The
+     color change lives in the keyframes (not a `transition: color`)
+     because Chrome won't interpolate between two inherited `var()`
+     values. Drop-shadow stack (tight + medium + wide) gives the 羽化
+     gradient from bright center to soft periphery. */
   .score-pan :global(svg .note.is-active),
   .score-pan :global(svg .harm.is-active) {
-    color: var(--accent);
-    animation: score-glow 2s cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation: score-glow 1800ms cubic-bezier(0.22, 1, 0.36, 1) both;
   }
   @keyframes score-glow {
+    /* Attack — brightest flash, widest halo */
     0% {
+      color: var(--accent);
       filter:
-        drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 95%, transparent))
-        drop-shadow(0 0 9px color-mix(in srgb, var(--accent) 60%, transparent))
-        drop-shadow(0 0 20px color-mix(in srgb, var(--accent) 30%, transparent));
+        drop-shadow(0 0 2px color-mix(in srgb, var(--accent) 100%, transparent))
+        drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 90%, transparent))
+        drop-shadow(0 0 16px color-mix(in srgb, var(--accent) 60%, transparent))
+        drop-shadow(0 0 32px color-mix(in srgb, var(--accent) 30%, transparent));
     }
-    100% {
+    /* Sustain — note still reads as lit, halo tightens */
+    45% {
+      color: var(--accent);
       filter:
-        drop-shadow(0 0 2px color-mix(in srgb, var(--accent) 55%, transparent))
-        drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 20%, transparent));
+        drop-shadow(0 0 2px color-mix(in srgb, var(--accent) 80%, transparent))
+        drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 45%, transparent))
+        drop-shadow(0 0 14px color-mix(in srgb, var(--accent) 20%, transparent));
+    }
+    /* Tail — color eases back toward the dim base, halo dissolves */
+    100% {
+      color: var(--fg-dim);
+      filter: drop-shadow(0 0 0 transparent);
     }
   }
 
@@ -250,6 +258,9 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
     .score-pan :global(svg .harm.is-active) {
       animation: none;
       filter: none;
+      /* Still tint so readers who opt out of motion can see
+         which note is sounding — just without the halo pulse. */
+      color: var(--accent);
     }
   }
 
@@ -258,7 +269,12 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
      are in .score-staff-lines). No background either — the pan mask
      already drops music to zero opacity in this region, and the
      staff-lines layer sits below the overlay, so there's nothing to
-     hide here. */
+     hide here.
+
+     For modulating scores, one `.score-frozen-shell` per unique keysig
+     is stacked here, absolutely positioned. The render loop toggles
+     `.is-current` on the shell matching the current score-time key;
+     the others fade out. */
   .score-stage :global(.score-frozen-overlay) {
     position: absolute;
     top: 0;
@@ -268,13 +284,25 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
     pointer-events: none;
     z-index: 2;
   }
-  .score-stage :global(.score-frozen-overlay svg) {
+  .score-stage :global(.score-frozen-shell) {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    transition: opacity 450ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .score-stage :global(.score-frozen-shell.is-current) {
+    opacity: 1;
+  }
+  .score-stage :global(.score-frozen-shell svg) {
     display: block;
     height: 100%;
     width: auto;
     color: var(--fg-dim);
   }
-  .score-stage :global(.score-frozen-overlay svg *) {
+  .score-stage :global(.score-frozen-shell svg *) {
     fill: currentColor;
     stroke: currentColor;
   }
@@ -308,9 +336,11 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
   @media (prefers-reduced-motion: reduce) {
     .score-blur-in { display: none; }
   }
-  /* While the reader is actively dragging, the pan translates every frame
-     and backdrop-filter has to re-sample its backdrop with each move —
-     that's the main source of drag stutter. Suspend it until pointerup. */
+  /* Whenever the pan translates every frame (both playback and drag),
+     backdrop-filter has to re-sample its backdrop per tick — that's the
+     main cause of perceptible stutter. Suspend it whenever the pan is
+     in motion; the blur comes back as soon as everything settles. */
+  .score.is-playing .score-blur-in,
   .score-stage.is-dragging .score-blur-in {
     -webkit-backdrop-filter: none;
             backdrop-filter: none;

@@ -32,16 +32,27 @@ const K = {
    *  so the invisible wrap always has content to the right of the one
    *  currently under the playhead. 3 buys an extra iteration of buffer. */
   LOOP_COPIES: 3,
-  /** Width of the fade zone just past the overlay where notes fade in/out
-   *  as they scroll toward the header. Smaller = more abrupt. */
-  MASK_FADE_PX: 24,
-  /** Gap between the overlay's right edge and the start of the fade zone. */
-  MASK_OVERLAY_MARGIN_PX: 4,
-  /** Extra pixels added to overlay width past headerWidth for visual breath. */
-  OVERLAY_BREATH_PX: 8,
+  /** Reference stage height the header-width constants were measured at.
+   *  Everything else scales proportionally via stageHeight / this value. */
+  REF_STAGE_HEIGHT_PX: 200,
+  /** Upper-bound display width of a frozen header (clef + up to 7
+   *  accidentals + meter), at REF_STAGE_HEIGHT_PX. Scaled per actual
+   *  stage height in mountScore, so mobile stages shrink the reserved
+   *  playhead zone in proportion with the glyphs. The overlay and mask
+   *  still hug the ACTUAL widest keysig this score visits — this is
+   *  only the floor that keeps the playhead axis stable across scores. */
+  HEADER_MAX_PX: 184,
+  /** Minimum horizontal distance between the overlay's right edge and
+   *  the playhead (also at REF_STAGE_HEIGHT_PX, scaled per stage). The
+   *  fade zone collapses toward this when a score uses exceptionally
+   *  wide key signatures; below it we push the playhead right rather
+   *  than cut the fade further. */
+  PLAYHEAD_OFFSET_PX: 16,
   /** How far the IntersectionObserver pre-loads a score before viewport entry. */
   IO_ROOT_MARGIN_PX: 200,
-  /** Default playhead position when the author doesn't specify one. */
+  /** Fallback playhead position when neither `data-playhead` nor the
+   *  header-derived minimum yields something larger. Rarely hit — most
+   *  scores are bound by the stable header minimum. */
   DEFAULT_PLAYHEAD_FRAC: 0.35,
   /** Lead-in before playback: the first note starts to the right of the
    *  playhead and scrolls toward it at normal scroll rate, hitting the
@@ -113,11 +124,37 @@ interface Anchor {
   x: number;  // stage-px relative to the SVG's own left edge
 }
 
+/**
+ * Header-state snapshot for the frozen overlay. Each event captures the
+ * current clef + keysig; either of those changing (via an inline
+ * `<scoreDef>` mid-section) emits a new event. `startMs` is re-timed in
+ * `mountScore` to the moment the inline change glyph crosses the
+ * playhead (not the first note of the new measure, which is hundreds
+ * of ms later). `measureIdx` is the 0-based section position so we can
+ * locate the glyph in the rendered SVG.
+ */
+interface HeaderEvent {
+  startMs: number;
+  measureIdx: number;
+  clefShape: string;
+  clefLine: string;
+  keysig: string;
+}
+
+/** Shell-match key for a header event — two events with the same
+ *  fingerprint reuse the same pre-rendered shell. */
+function headerFingerprint(e: Pick<HeaderEvent, 'clefShape' | 'clefLine' | 'keysig'>) {
+  return `${e.clefShape}${e.clefLine}-${e.keysig}`;
+}
+
 interface Rendered {
   svg: string;
   notes: Note[];
   harms: Harm[];
   anchors: Anchor[];  // filled in by mountScore after the SVG is in DOM
+  headerEvents: HeaderEvent[];
+  meterCount: number;
+  meterUnit: number;
   totalMs: number;
 }
 
@@ -193,107 +230,232 @@ async function renderMei(meiText: string): Promise<Rendered> {
     }
   }
 
-  // Harms (chord symbols + functional labels). Parse the SVG to find
-  // every `.harm[id]`, ask Verovio for its onset ms, then compute each
-  // harm's endMs as the onset of the next DISTINCT harm beat (so the
-  // "Dm7 above" and "ii below" pair that share a tstamp both cover
-  // the same interval). For the last group, endMs = maxTstamp.
+  // Parse the MEI source once, then extract both harm onsets and
+  // clef/keysig events in a single walk of <section>'s direct children.
+  // Verovio's `getTimesForElement` returns `{}` for harm elements — it
+  // only carries timing for notes/rests — and doesn't expose clef/key
+  // changes, so we compute both ourselves.
   const harms: Harm[] = [];
+  const headerEvents: HeaderEvent[] = [];
+  let meterCount = 4;
+  let meterUnit = 4;
   try {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(svg, 'image/svg+xml');
-    const harmEls = Array.from(doc.querySelectorAll('.harm[id]'));
-    const byStart = new Map<number, string[]>();
-    for (const el of harmEls) {
-      const id = (el as Element).id;
-      if (!id) continue;
-      const t = toolkit.getTimesForElement(id) as {
-        realTimeOnsetMilliseconds?: number | number[];
-      };
-      const onsetRaw = t?.realTimeOnsetMilliseconds;
-      const onset = Array.isArray(onsetRaw) ? onsetRaw[0] : onsetRaw;
-      if (typeof onset !== 'number') continue;
-      const arr = byStart.get(onset) ?? [];
-      arr.push(id);
-      byStart.set(onset, arr);
-    }
-    const sortedStarts = [...byStart.keys()].sort((a, b) => a - b);
-    for (let i = 0; i < sortedStarts.length; i++) {
-      const start = sortedStarts[i];
-      const end = sortedStarts[i + 1] ?? maxTstamp;
-      for (const id of byStart.get(start)!) {
-        harms.push({ id, startMs: start, endMs: end });
+    const meiDoc = new DOMParser().parseFromString(meiText, 'application/xml');
+    const initialScoreDef = meiDoc.querySelector('scoreDef');
+    const initialStaffDef = initialScoreDef?.querySelector('staffDef');
+    const bpm = Number(initialScoreDef?.getAttribute('midi.bpm') ?? 120);
+    meterCount = Number(initialScoreDef?.getAttribute('meter.count') ?? 4);
+    meterUnit = Number(initialScoreDef?.getAttribute('meter.unit') ?? 4);
+    const msPerBeat = 60000 / bpm;
+    const msPerMeasure = meterCount * msPerBeat;
+
+    // Clef + keysig can live directly on <scoreDef> or on a nested
+    // <staffDef n="1">. Resolver falls back across both.
+    const read = (attr: string, els: ReadonlyArray<Element | null | undefined>) => {
+      for (const el of els) {
+        const v = el?.getAttribute(attr);
+        if (v !== null && v !== undefined) return v;
+      }
+      return null;
+    };
+    let clefShape = read('clef.shape', [initialStaffDef, initialScoreDef]) ?? 'G';
+    let clefLine = read('clef.line', [initialStaffDef, initialScoreDef]) ?? '2';
+    let keysig = read('key.sig', [initialScoreDef, initialStaffDef]) ?? '0';
+    headerEvents.push({ startMs: 0, measureIdx: 0, clefShape, clefLine, keysig });
+
+    const meiOnsets: number[] = [];
+    const section = meiDoc.querySelector('section');
+    if (section) {
+      let measureIdx = 0;
+      for (const child of Array.from(section.children)) {
+        if (child.localName === 'measure') {
+          const measureStart = measureIdx * msPerMeasure;
+          for (const c of Array.from(child.children)) {
+            if (c.localName !== 'harm') continue;
+            const tstamp = Number(c.getAttribute('tstamp') ?? 1);
+            meiOnsets.push(measureStart + (tstamp - 1) * msPerBeat);
+          }
+          measureIdx += 1;
+          continue;
+        }
+        if (child.localName !== 'scoreDef') continue;
+        // scoreDef override: read new values, emit event only on any change.
+        const nestedStaffDef = child.querySelector('staffDef');
+        const newShape = read('clef.shape', [child, nestedStaffDef]) ?? clefShape;
+        const newLine = read('clef.line', [child, nestedStaffDef]) ?? clefLine;
+        const newKey = read('key.sig', [child, nestedStaffDef]) ?? keysig;
+        if (newShape === clefShape && newLine === clefLine && newKey === keysig) continue;
+        clefShape = newShape;
+        clefLine = newLine;
+        keysig = newKey;
+        headerEvents.push({
+          startMs: measureIdx * msPerMeasure, measureIdx,
+          clefShape, clefLine, keysig,
+        });
       }
     }
+
+    // Harm ids from the rendered SVG appear in the same document order
+    // as the MEI source, so zip by index to assign each id its onset.
+    // endMs is the next DISTINCT onset so harm pairs sharing a tstamp
+    // (e.g. "Dm7 above" + "ii below") cover the same interval.
+    const svgDoc = new DOMParser().parseFromString(svg, 'image/svg+xml');
+    const svgHarmIds = Array.from(svgDoc.querySelectorAll('.harm[id]'))
+      .map((el) => (el as Element).id)
+      .filter(Boolean);
+    if (svgHarmIds.length === meiOnsets.length) {
+      const distinctStarts = [...new Set(meiOnsets)].sort((a, b) => a - b);
+      const nextAfter = new Map<number, number>();
+      for (let i = 0; i < distinctStarts.length; i++) {
+        nextAfter.set(distinctStarts[i], distinctStarts[i + 1] ?? maxTstamp);
+      }
+      for (let i = 0; i < svgHarmIds.length; i++) {
+        const start = meiOnsets[i];
+        harms.push({ id: svgHarmIds[i], startMs: start, endMs: nextAfter.get(start) ?? maxTstamp });
+      }
+    } else if (svgHarmIds.length > 0) {
+      console.warn(
+        '[score] harm count mismatch — MEI:', meiOnsets.length,
+        'SVG:', svgHarmIds.length, '— skipping harm sync',
+      );
+    }
   } catch (err) {
-    // Harm timing extraction is best-effort — if Verovio's API shape
-    // changes or the SVG is unusual, just ship without harm sync.
-    console.warn('[score] harm timing extraction failed:', err);
+    console.warn('[score] MEI metadata extraction failed:', err);
   }
 
   toolkit.destroy();
 
-  return { svg, notes, harms, anchors: [], totalMs: maxTstamp };
+  return {
+    svg, notes, harms, anchors: [], headerEvents,
+    meterCount, meterUnit, totalMs: maxTstamp,
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Web Audio synth — a tiny polyphonic voice bank
 // ---------------------------------------------------------------------------
 
+/** Procedurally-generated impulse response for a convolution reverb —
+ *  decaying stereo noise, cheap to build, sounds roomy. `decay` tilts
+ *  the curve (higher = darker tail). */
+function buildReverbIR(ctx: AudioContext, durationSec: number, decay: number): AudioBuffer {
+  const rate = ctx.sampleRate;
+  const len = Math.max(1, Math.floor(rate * durationSec));
+  const ir = ctx.createBuffer(2, len, rate);
+  for (let ch = 0; ch < 2; ch++) {
+    const data = ir.getChannelData(ch);
+    for (let i = 0; i < len; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+    }
+  }
+  return ir;
+}
+
+/** Tiny polyphonic electric-piano-ish voice bank with a shared
+ *  convolution reverb. Each voice is a sine fundamental + a quickly-
+ *  decaying octave "bell" (for attack shimmer) through a lowpass, then
+ *  split between a dry bus and a reverb send. */
 class Synth {
   private ctx: AudioContext;
-  private master: GainNode;
-  private active: Set<{ osc: OscillatorNode; gain: GainNode; until: number }> = new Set();
+  private dry: GainNode;
+  private reverbSend: GainNode;
+  private active: Set<{ stop: (t: number) => void }> = new Set();
 
   constructor(ctx: AudioContext) {
     this.ctx = ctx;
-    this.master = ctx.createGain();
-    this.master.gain.value = 0.24;
-    this.master.connect(ctx.destination);
+    this.dry = ctx.createGain();
+    this.dry.gain.value = 0.2;
+    this.dry.connect(ctx.destination);
+
+    const convolver = ctx.createConvolver();
+    convolver.buffer = buildReverbIR(ctx, 1.8, 1.8);
+    const wet = ctx.createGain();
+    wet.gain.value = 0.28;
+    this.reverbSend = ctx.createGain();
+    this.reverbSend.gain.value = 1;
+    this.reverbSend.connect(convolver);
+    convolver.connect(wet);
+    wet.connect(ctx.destination);
   }
 
-  /** Schedule one note on the audio clock, with an ADSR envelope. */
   play(midi: number, startT: number, endT: number) {
     const ctx = this.ctx;
     if (endT <= startT) endT = startT + 0.05;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'triangle';
-    osc.frequency.value = 440 * Math.pow(2, (midi - 69) / 12);
+    const freq = 440 * Math.pow(2, (midi - 69) / 12);
 
-    const A = 0.015, D = 0.09, S = 0.55, R = 0.12, peak = 0.8;
+    // Voice bus feeds both the dry master and the reverb send.
+    const voice = ctx.createGain();
+    voice.gain.value = 0;
+    const lowpass = ctx.createBiquadFilter();
+    lowpass.type = 'lowpass';
+    lowpass.frequency.value = Math.min(4800, freq * 8);
+    lowpass.Q.value = 0.4;
+    voice.connect(lowpass);
+    lowpass.connect(this.dry);
+    const send = ctx.createGain();
+    send.gain.value = 0.45;
+    lowpass.connect(send);
+    send.connect(this.reverbSend);
+
+    // Fundamental — warm body, sine.
+    const body = ctx.createOscillator();
+    body.type = 'sine';
+    body.frequency.value = freq;
+    body.connect(voice);
+
+    // Bell — octave sine with its own fast-decay envelope, blended in
+    // at attack for that Rhodes shimmer. Detune a hair to reduce beating
+    // with the body.
+    const bell = ctx.createOscillator();
+    bell.type = 'sine';
+    bell.frequency.value = freq * 2;
+    bell.detune.value = 4;
+    const bellGain = ctx.createGain();
+    bellGain.gain.setValueAtTime(0, startT);
+    bellGain.gain.linearRampToValueAtTime(0.35, startT + 0.004);
+    bellGain.gain.exponentialRampToValueAtTime(0.001, startT + 0.35);
+    bell.connect(bellGain);
+    bellGain.connect(voice);
+
+    // Amplitude envelope on the voice bus.
+    const A = 0.006, D = 0.22, S = 0.48, R = 0.18, peak = 0.85;
     const sustain = peak * S;
     const sustainUntil = Math.max(startT + A + D, endT - R);
-    gain.gain.setValueAtTime(0, startT);
-    gain.gain.linearRampToValueAtTime(peak, startT + A);
-    gain.gain.linearRampToValueAtTime(sustain, startT + A + D);
-    gain.gain.setValueAtTime(sustain, sustainUntil);
-    gain.gain.linearRampToValueAtTime(0, sustainUntil + R);
+    voice.gain.setValueAtTime(0, startT);
+    voice.gain.linearRampToValueAtTime(peak, startT + A);
+    voice.gain.exponentialRampToValueAtTime(Math.max(0.0001, sustain), startT + A + D);
+    voice.gain.setValueAtTime(sustain, sustainUntil);
+    voice.gain.exponentialRampToValueAtTime(0.0001, sustainUntil + R);
 
-    osc.connect(gain);
-    gain.connect(this.master);
-    osc.start(startT);
-    osc.stop(sustainUntil + R + 0.02);
+    const stopAt = sustainUntil + R + 0.02;
+    body.start(startT);
+    bell.start(startT);
+    body.stop(stopAt);
+    bell.stop(Math.min(stopAt, startT + 0.4));
 
-    const voice = { osc, gain, until: sustainUntil + R };
-    this.active.add(voice);
-    osc.onended = () => {
-      try { gain.disconnect(); } catch {}
-      this.active.delete(voice);
+    const handle = {
+      stop: (t: number) => {
+        try {
+          voice.gain.cancelScheduledValues(t);
+          voice.gain.setValueAtTime(voice.gain.value, t);
+          voice.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
+          body.stop(t + 0.07);
+          bell.stop(t + 0.07);
+        } catch {}
+      },
+    };
+    this.active.add(handle);
+    body.onended = () => {
+      try { voice.disconnect(); } catch {}
+      try { send.disconnect(); } catch {}
+      this.active.delete(handle);
     };
   }
 
   /** Cancel all pending/sounding voices — used on pause. */
   panic() {
-    const now = this.ctx.currentTime;
-    for (const v of this.active) {
-      try {
-        v.gain.gain.cancelScheduledValues(now);
-        v.gain.gain.setValueAtTime(v.gain.gain.value, now);
-        v.gain.gain.linearRampToValueAtTime(0, now + 0.04);
-        v.osc.stop(now + 0.06);
-      } catch {}
-    }
+    const t = this.ctx.currentTime;
+    for (const v of this.active) v.stop(t);
     this.active.clear();
   }
 }
@@ -301,6 +463,10 @@ class Synth {
 // ---------------------------------------------------------------------------
 // ScorePlayer — transport + scheduling
 // ---------------------------------------------------------------------------
+
+/** Module-level set of players currently sounding audio. A new `play()`
+ *  pauses every other member so two scores on the same page don't overlap. */
+const activePlayers: Set<ScorePlayer> = new Set();
 
 class ScorePlayer {
   private static readonly LOOKAHEAD_MS = 250;
@@ -358,6 +524,11 @@ class ScorePlayer {
   }
 
   async play() {
+    // Only one score at a time per page — pause any sibling that's
+    // currently sounding before we start.
+    for (const other of activePlayers) {
+      if (other !== this) other.pause();
+    }
     this.ensureAudio();
     const ctx = this.ctx!;
     await ctx.resume();
@@ -370,6 +541,7 @@ class ScorePlayer {
     this.scheduledUpTo = this.pausedAt;
     this.playing = true;
     this.atFreshStart = false;
+    activePlayers.add(this);
     this.tick();
     this.schedulerTimer = setInterval(() => this.tick(), ScorePlayer.SCHED_INTERVAL_MS);
   }
@@ -379,6 +551,7 @@ class ScorePlayer {
     this.pausedAt = (this.ctx.currentTime - this.iterStart) * 1000;
     if (this.loop) this.pausedAt = this.pausedAt % this.rendered.totalMs;
     this.playing = false;
+    activePlayers.delete(this);
     if (this.schedulerTimer) { clearInterval(this.schedulerTimer); this.schedulerTimer = null; }
     this.synth.panic();
   }
@@ -439,6 +612,7 @@ class ScorePlayer {
 
   destroy() {
     this.pause();
+    activePlayers.delete(this);
     if (this.ctx) {
       try { this.ctx.close(); } catch {}
       this.ctx = null;
@@ -668,6 +842,24 @@ function makeXAtMs(anchors: Anchor[]): (ms: number) => number {
   };
 }
 
+/** Inverse of makeXAtMs — given an x in SVG-coord stage-px, return the
+ *  score-time ms at which that x is under the playhead. Used to align
+ *  overlay crossfades to when an inline keysig glyph (rather than the
+ *  following note) crosses the playhead. */
+function msAtX(anchors: Anchor[], x: number): number {
+  if (anchors.length === 0) return 0;
+  if (x <= anchors[0].x) return anchors[0].t;
+  if (x >= anchors[anchors.length - 1].x) return anchors[anchors.length - 1].t;
+  for (let i = 1; i < anchors.length; i++) {
+    if (anchors[i].x >= x) {
+      const a = anchors[i - 1], b = anchors[i];
+      const f = b.x === a.x ? 0 : (x - a.x) / (b.x - a.x);
+      return a.t + f * (b.t - a.t);
+    }
+  }
+  return anchors[anchors.length - 1].t;
+}
+
 /**
  * Build a fresh SVG containing ONLY the ancestor chain
  * defs + definition-scale > page-margin > system > measure 1
@@ -708,19 +900,135 @@ function cloneMeasureOneShell(srcSvg: SVGSVGElement): SVGSVGElement | null {
   return out;
 }
 
-/** Frozen header overlay (clef / keysig / meter, pinned at stage left).
- *  Returns null if there's no header to show. */
+/** Minimal MEI: a single-measure whole rest with the given clef + keysig
+ *  + meter. Used to pre-render a clean "full header" shell for every
+ *  (clef, keysig) combination a score visits — so the frozen overlay
+ *  shows the same visual style regardless of whether the change is a
+ *  keysig modulation, a clef switch (e.g. treble↔bass), or both. */
+function headerOnlyMei(
+  clefShape: string, clefLine: string, keysig: string,
+  meterCount: number, meterUnit: number,
+): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<mei xmlns="http://www.music-encoding.org/ns/mei" meiversion="5.0">
+  <meiHead><fileDesc><titleStmt><title>k</title></titleStmt><pubStmt/></fileDesc></meiHead>
+  <music><body><mdiv><score>
+    <scoreDef meter.count="${meterCount}" meter.unit="${meterUnit}" key.sig="${keysig}">
+      <staffGrp><staffDef n="1" lines="5" clef.shape="${clefShape}" clef.line="${clefLine}"/></staffGrp>
+    </scoreDef>
+    <section><measure n="1"><staff n="1"><layer n="1">
+      <rest dur="1"/>
+    </layer></staff></measure></section>
+  </score></mdiv></body></music>
+</mei>`;
+}
+
+/** Render one SVG shell per unique (clef, keysig) event via Verovio.
+ *  Shell = clef + keysig + meter, measure-music stripped. Keyed by
+ *  `headerFingerprint` so callers reuse the same shell for equivalent events. */
+async function renderHeaderShells(
+  events: ReadonlyArray<HeaderEvent>, meterCount: number, meterUnit: number,
+): Promise<Map<string, SVGSVGElement>> {
+  const { VerovioToolkit, module } = await loadVerovio();
+  const byFingerprint = new Map<string, HeaderEvent>();
+  for (const e of events) {
+    const fp = headerFingerprint(e);
+    if (!byFingerprint.has(fp)) byFingerprint.set(fp, e);
+  }
+  const shells = new Map<string, SVGSVGElement>();
+  for (const [fp, e] of byFingerprint) {
+    try {
+      const tk = new VerovioToolkit(module);
+      tk.setOptions({
+        breaks: 'none', scale: 40, pageWidth: 100000, pageHeight: 60000,
+        pageMarginTop: 40, pageMarginBottom: 40,
+        pageMarginLeft: 40, pageMarginRight: 40,
+        adjustPageHeight: true, adjustPageWidth: true, svgViewBox: true,
+      });
+      tk.loadData(headerOnlyMei(e.clefShape, e.clefLine, e.keysig, meterCount, meterUnit));
+      const svgStr = tk.renderToSVG(1, false);
+      tk.destroy();
+      const tmp = document.createElement('div');
+      tmp.innerHTML = svgStr;
+      const srcSvg = tmp.querySelector('svg') as SVGSVGElement | null;
+      if (!srcSvg) continue;
+      const shell = cloneMeasureOneShell(srcSvg);
+      if (shell) shells.set(fp, shell);
+    } catch (err) {
+      console.warn(`[score] shell render failed for ${fp}:`, err);
+    }
+  }
+  return shells;
+}
+
+/** Display-px width of each shell's clef+keysig+meter at the given stage
+ *  height. Attaches clones of all shells in one off-screen probe so layout
+ *  flushes once for the whole batch. The overlay sizes to the widest of
+ *  these, which lets the fade zone (overlay-right → playhead) stretch into
+ *  any blank space narrow keysigs leave unused. */
+function measureShellWidths(
+  shells: Map<string, SVGSVGElement>, stageHeightPx: number,
+): Map<string, number> {
+  const widths = new Map<string, number>();
+  if (shells.size === 0) return widths;
+  const probe = document.createElement('div');
+  probe.style.cssText =
+    `position:fixed;left:-99999px;top:0;height:${stageHeightPx}px;` +
+    `display:flex;pointer-events:none;z-index:-1;`;
+  const clones: Array<{ fp: string; clone: SVGSVGElement }> = [];
+  for (const [fp, shell] of shells) {
+    const clone = shell.cloneNode(true) as SVGSVGElement;
+    clone.style.display = 'block';
+    clone.style.height = '100%';
+    clone.style.width = 'auto';
+    probe.appendChild(clone);
+    clones.push({ fp, clone });
+  }
+  document.body.appendChild(probe);
+  for (const { fp, clone } of clones) {
+    const w = measureHeaderWidth(clone.querySelector('.measure'), clone.getBoundingClientRect());
+    widths.set(fp, w);
+  }
+  probe.remove();
+  return widths;
+}
+
+/** Frozen header overlay + the only API for updating it: `setCurrent(fp)`
+ *  flips which shell is visible. Keeps the shell-per-layer DOM structure
+ *  an implementation detail of this function. Returns null if no shells
+ *  could be built. */
+interface FrozenOverlay {
+  host: HTMLDivElement;
+  setCurrent(fingerprint: string): void;
+}
 function createFrozenOverlay(
-  srcSvg: SVGSVGElement,
-  headerWidth: number,
-): HTMLDivElement | null {
-  const shell = cloneMeasureOneShell(srcSvg);
-  if (!shell) return null;
+  shells: Map<string, SVGSVGElement>,
+  initialFingerprint: string,
+  overlayWidth: number,
+): FrozenOverlay | null {
+  if (shells.size === 0) return null;
   const host = document.createElement('div');
   host.className = 'score-frozen-overlay';
-  host.style.width = `${headerWidth + K.OVERLAY_BREATH_PX}px`;
-  host.appendChild(shell);
-  return host;
+  host.style.width = `${overlayWidth}px`;
+  const layers = new Map<string, HTMLDivElement>();
+  for (const [fp, shell] of shells) {
+    const layer = document.createElement('div');
+    layer.className = 'score-frozen-shell';
+    if (fp === initialFingerprint) layer.classList.add('is-current');
+    layer.appendChild(shell);
+    host.appendChild(layer);
+    layers.set(fp, layer);
+  }
+  let current = initialFingerprint;
+  return {
+    host,
+    setCurrent(fingerprint: string) {
+      if (fingerprint === current) return;
+      layers.get(current)?.classList.remove('is-current');
+      layers.get(fingerprint)?.classList.add('is-current');
+      current = fingerprint;
+    },
+  };
 }
 
 /** Measured y-midlines (stage-relative px) of the 5 staff lines in the
@@ -768,9 +1076,14 @@ function stripStaffLinesFrom(root: Element) {
   }
 }
 
-/** Remove clef/keysig/meter from every measure inside a subtree. */
+/** Remove the opening clef/keysig/meter from measure 1 only. The frozen
+ *  overlay already draws these. Mid-piece key-sig changes in later
+ *  measures are LEFT IN PLACE so they can scroll past the playhead —
+ *  the overlay fades to the new key as each change crosses. */
 function stripHeadersFrom(root: Element) {
-  for (const el of Array.from(root.querySelectorAll('.clef, .keySig, .meterSig'))) {
+  const first = root.querySelector('.measure');
+  if (!first) return;
+  for (const el of Array.from(first.querySelectorAll('.clef, .keySig, .meterSig'))) {
     el.remove();
   }
 }
@@ -785,14 +1098,30 @@ function applyLoopSpacing(panSvgs: SVGSVGElement[], headerWidth: number) {
 }
 
 /** Set `--mask-start` / `--mask-end` CSS vars on the stage for the pan
- *  mask gradient. Mask is opaque-0 through mask-start (hidden beneath
- *  overlay), fades to opaque-1 by mask-end (the fade zone past the
- *  overlay), then opaque all the way to the right edge. */
-function setFadeMaskVars(stage: HTMLElement, headerWidth: number) {
-  const start = headerWidth + K.MASK_OVERLAY_MARGIN_PX;
-  const end = start + K.MASK_FADE_PX;
+ *  mask gradient. 0 → mask-start is fully transparent (pan hidden where
+ *  the frozen overlay sits), mask-start → mask-end fades from 0 → 1,
+ *  and mask-end onward is fully opaque. Pinning `end` to the playhead
+ *  means a note at the playhead is at opacity 1 when it sounds, and
+ *  fades out as it scrolls past into the header zone. Aligning `start`
+ *  with the overlay's right edge keeps mid-piece key-change glyphs in
+ *  the pan from leaking through the overlay during crossfades. */
+function setFadeMaskVars(stage: HTMLElement, start: number, end: number) {
   stage.style.setProperty('--mask-start', `${start}px`);
   stage.style.setProperty('--mask-end', `${end}px`);
+}
+
+/**
+ * Last header-event whose startMs ≤ ms. `events` is sorted by startMs
+ * with a guaranteed entry at startMs=0, so the result is always defined.
+ * Cheap enough to call each frame given typical event counts.
+ */
+function headerAtMs(events: ReadonlyArray<HeaderEvent>, ms: number): HeaderEvent {
+  let e = events[0];
+  for (const cand of events) {
+    if (cand.startMs <= ms) e = cand;
+    else break;
+  }
+  return e;
 }
 
 /**
@@ -844,17 +1173,26 @@ function applyClassDiff(
  *  a cancel fn. */
 function setupRenderLoop(args: {
   host: HTMLElement;
-  stage: HTMLElement;
   pan: HTMLElement;
   player: ScorePlayer;
   loop: boolean;
   musicWidth: number;
-  playheadFrac: number;
+  /** Absolute playhead x (stage-px from left). Fixed across stage resizes
+   *  so the playhead position is independent of both key signature and
+   *  viewport width changes. */
+  playheadPx: number;
   xAtMs: (ms: number) => number;
   notes: ReadonlyArray<Note>;
   harms: ReadonlyArray<Harm>;
+  /** Header (clef + keysig) events within one iteration, sorted by
+   *  startMs with a guaranteed entry at startMs=0. */
+  headerEvents: ReadonlyArray<HeaderEvent>;
+  /** Frozen overlay to crossfade as header events cross the playhead;
+   *  null for scores that never visit more than one header state. */
+  overlay: FrozenOverlay | null;
 }): () => void {
-  const { host, stage, pan, player, loop, musicWidth, playheadFrac, xAtMs, notes, harms } = args;
+  const { host, pan, player, loop, musicWidth, playheadPx, xAtMs, notes, harms,
+          headerEvents, overlay } = args;
   let rafId = 0;
   let lastRenderMs = -1;
   let wrapOffset = 0;
@@ -866,8 +1204,6 @@ function setupRenderLoop(args: {
     const ms = player.currentMs();
     if (ms !== lastRenderMs) {
       lastRenderMs = ms;
-      const stageRect = stage.getBoundingClientRect();
-      const playheadPx = playheadFrac * stageRect.width;
 
       let translateX: number;
       if (loop) {
@@ -878,11 +1214,14 @@ function setupRenderLoop(args: {
           lastIterSeen = iter;
         }
         translateX = playheadPx - containerX + wrapOffset;
-        // Wrap logic only applies AFTER pre-roll (ms >= 0). During the
-        // lead-in, translate is intentionally positive so the first note
-        // sits off to the right of the playhead — wrapping would teleport
-        // the pan into a mid-loop copy and destroy the effect.
-        if (ms >= 0) {
+        // Wrap only AFTER the first iteration is done. At iter=0 the
+        // initial translate is naturally positive — stage left of the
+        // playhead is simply the empty pre-music region. Wrapping there
+        // would teleport the pan to show the TAIL of the loop suddenly
+        // filling that empty region, which reads as "a duplicate score
+        // appearing" at first-note time. Once iter > 0 the copies are
+        // already tiled so the wrap is visually seamless.
+        if (iter > 0) {
           while (translateX <= -musicWidth) { translateX += musicWidth; wrapOffset += musicWidth; }
           while (translateX > 0) { translateX -= musicWidth; wrapOffset -= musicWidth; }
         }
@@ -910,6 +1249,14 @@ function setupRenderLoop(args: {
         prevActiveNotes = new Set();
         prevActiveHarms = new Set();
       }
+
+      // Overlay crossfade on any header change (clef, keysig, or both).
+      // Pre-roll (ms < 0) resolves to the initial event. For loop mode
+      // `ms` is already modulo'd to one iteration, so wrapping naturally
+      // flips the overlay back to the initial fingerprint.
+      if (overlay && headerEvents.length > 1) {
+        overlay.setCurrent(headerFingerprint(headerAtMs(headerEvents, ms)));
+      }
     }
     rafId = requestAnimationFrame(frame);
   }
@@ -931,7 +1278,6 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
   const playheadEl = host.querySelector<HTMLElement>('.score-playhead');
   const stage = host.querySelector<HTMLElement>('.score-stage') ?? host;
   if (!pan || !playheadEl) return null;
-  playheadEl.style.left = `${playheadFrac * 100}%`;
 
   // --- Fetch + render -----------------------------------------------------
   let meiText: string;
@@ -953,9 +1299,10 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
   const firstMeasure = svgEl.querySelector('.measure');
   const firstStaff = svgEl.querySelector('.staff');
 
-  const headerWidth = measureHeaderWidth(firstMeasure, svgRect0);
-  const svgWidth = svgRect0.width;
-  const musicWidth = svgWidth - headerWidth;
+  // measure-1 header in the pan's own coordinates — drives loop
+  // copy-shifting so music tiles end-to-end across loop copies.
+  const actualHeaderWidth = measureHeaderWidth(firstMeasure, svgRect0);
+  const musicWidth = svgRect0.width - actualHeaderWidth;
 
   const anchors = padAnchors(
     buildAnchors(svgEl, rendered, svgRect0),
@@ -964,37 +1311,89 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
   rendered.anchors = anchors;
   const xAtMs = makeXAtMs(anchors);
 
+  // Re-time each mid-piece header event so its startMs matches the moment
+  // the inline change glyph in the pan (clef and/or keysig) actually
+  // crosses the playhead. Without this, overlay crossfades fire at the
+  // first-note onset (hundreds of ms later at normal scroll rates) and
+  // the glyph vanishes into the header before the header updates.
+  // When both clef and keysig change we anchor to whichever glyph sits
+  // leftmost — they render side by side at the start of the measure.
+  const svgMeasures = Array.from(svgEl.querySelectorAll('.measure'));
+  for (const evt of rendered.headerEvents) {
+    if (evt.measureIdx === 0) continue;
+    const m = svgMeasures[evt.measureIdx];
+    if (!m) continue;
+    let leftMost: DOMRect | null = null;
+    for (const g of Array.from(m.querySelectorAll('.clef, .keySig'))) {
+      const r = (g as Element).getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) continue;
+      if (!leftMost || r.left < leftMost.left) leftMost = r;
+    }
+    if (!leftMost) continue;
+    const centerX = leftMost.left + leftMost.width / 2 - svgRect0.left;
+    evt.startMs = msAtX(anchors, centerX);
+  }
+
   const staffYs = measureStaffYs(firstStaff, stageRect0.top);
 
-  // --- Build overlay (while the header elements are still in place) ------
-  const frozenOverlay = createFrozenOverlay(svgEl, headerWidth);
-  if (frozenOverlay) stage.appendChild(frozenOverlay);
+  // --- Build overlay shells + playhead + mask ---------------------------
+  const shellMap = await renderHeaderShells(
+    rendered.headerEvents, rendered.meterCount, rendered.meterUnit,
+  );
+  const shellWidths = measureShellWidths(shellMap, stageRect0.height);
+  // Widest shell this score visits (NOT page-global). The overlay sizes
+  // to this; the mask fade zone spans (this → playhead). For a C-only
+  // score that's ~78→200 px of fade through blank space; for a
+  // 7-accidental score it tightens to ~30 px. Fallback to the pan's
+  // measure-1 header if no shell measurements landed.
+  const headerWidestWidth =
+    Math.max(0, ...shellWidths.values()) || actualHeaderWidth;
 
-  // --- Build the single-source staff-lines layer -------------------------
+  // Playhead anchored to `HEADER_MAX_PX + OFFSET` so scores on one page
+  // share the same axis, both scaled with actual stage height so mobile
+  // (smaller stage) shrinks the reserved zone proportionally. Clamped
+  // upward by the widest shell + OFFSET and by author-supplied
+  // `data-playhead` (stage-fraction).
+  const stageScale = stageRect0.height / K.REF_STAGE_HEIGHT_PX;
+  const playheadOffsetPx = K.PLAYHEAD_OFFSET_PX * stageScale;
+  const playheadPx = Math.max(
+    headerWidestWidth + playheadOffsetPx,
+    K.HEADER_MAX_PX * stageScale + playheadOffsetPx,
+    playheadFrac * stageRect0.width,
+  );
+  playheadEl.style.left = `${playheadPx}px`;
+
+  const initialFingerprint = rendered.headerEvents[0]
+    ? headerFingerprint(rendered.headerEvents[0])
+    : 'G2-0';
+  const frozenOverlay = createFrozenOverlay(
+    shellMap, initialFingerprint, headerWidestWidth,
+  );
+  if (frozenOverlay) stage.appendChild(frozenOverlay.host);
+
   const staffLayer = createStaffLinesLayer(staffYs, stageRect0);
   if (staffLayer) stage.insertBefore(staffLayer, stage.firstChild);
 
-  // --- Strip: staff lines from pan + overlay, headers from pan -----------
+  // Shells own clef/keysig/meter for measure 1; strip it from the pan so
+  // it's not drawn twice. Mid-piece changes in later measures stay put
+  // and scroll past the playhead naturally.
   for (const s of panSvgs) stripStaffLinesFrom(s);
-  if (frozenOverlay) stripStaffLinesFrom(frozenOverlay);
+  if (frozenOverlay) stripStaffLinesFrom(frozenOverlay.host);
   for (const s of panSvgs) stripHeadersFrom(s);
 
-  // --- Loop spacing + pan mask --------------------------------------------
-  if (loop) applyLoopSpacing(panSvgs, headerWidth);
-  setFadeMaskVars(stage, headerWidth);
+  if (loop) applyLoopSpacing(panSvgs, actualHeaderWidth);
+  setFadeMaskVars(stage, headerWidestWidth, playheadPx);
 
-  // --- Player + render + pointer handler ---------------------------------
   const player = new ScorePlayer(rendered, loop, K.PRE_ROLL_MS, K.TAIL_MS);
   if (import.meta.env.DEV) {
-    // Dev-only hook for console inspection / tests. Not referenced by any
-    // production code path.
     (host as unknown as { _player: ScorePlayer })._player = player;
   }
   player.onEnd = () => host.classList.remove('is-playing');
 
   const cancelLoop = setupRenderLoop({
-    host, stage, pan, player, loop, musicWidth, playheadFrac, xAtMs,
+    host, pan, player, loop, musicWidth, playheadPx, xAtMs,
     notes: rendered.notes, harms: rendered.harms,
+    headerEvents: rendered.headerEvents, overlay: frozenOverlay,
   });
 
   // --- Pointer handler: drag-to-seek + click-to-toggle + fade-to-start ---
