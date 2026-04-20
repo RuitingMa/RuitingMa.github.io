@@ -28,13 +28,18 @@
               <harm place="below" staff="1" tstamp="1" n="2">I</harm>
             </measure>
 
-            <!-- Bar 2 — little star, Am7, vi -->
+            <!-- Bar 2 — little star, Am7, vi. Beats 3-4 are a held g;
+                 written as two tied quarter notes rather than a half so
+                 beat 4 shows a notehead (engraving-equivalent, keeps the
+                 measure visually symmetric with the q-q-q-q bars). -->
             <measure n="2">
               <staff n="1"><layer n="1">
                 <note pname="a" oct="4" dur="4"/>
                 <note pname="a" oct="4" dur="4"/>
-                <note pname="g" oct="4" dur="2"/>
+                <note xml:id="tw-b2-n3" pname="g" oct="4" dur="4"/>
+                <note xml:id="tw-b2-n4" pname="g" oct="4" dur="4"/>
               </layer></staff>
+              <tie startid="#tw-b2-n3" endid="#tw-b2-n4"/>
               <harm place="above" staff="1" tstamp="1" n="1">Am7</harm>
               <harm place="below" staff="1" tstamp="1" n="2">vi</harm>
             </measure>
@@ -51,13 +56,15 @@
               <harm place="below" staff="1" tstamp="1" n="2">IV</harm>
             </measure>
 
-            <!-- Bar 4 — what you are, Dm7 → G7 (ii-V), resolving to I next bar -->
+            <!-- Bar 4 — what you are, Dm7 → G7 (ii-V), resolving to I next bar. -->
             <measure n="4">
               <staff n="1"><layer n="1">
                 <note pname="d" oct="4" dur="4"/>
                 <note pname="d" oct="4" dur="4"/>
-                <note pname="c" oct="4" dur="2"/>
+                <note xml:id="tw-b4-n3" pname="c" oct="4" dur="4"/>
+                <note xml:id="tw-b4-n4" pname="c" oct="4" dur="4"/>
               </layer></staff>
+              <tie startid="#tw-b4-n3" endid="#tw-b4-n4"/>
               <harm place="above" staff="1" tstamp="1" n="1">Dm7</harm>
               <harm place="above" staff="1" tstamp="3" n="1">G7</harm>
               <harm place="below" staff="1" tstamp="1" n="2">ii</harm>
@@ -81,8 +88,10 @@
               <staff n="1"><layer n="1">
                 <note pname="e" oct="4" dur="4"/>
                 <note pname="e" oct="4" dur="4"/>
-                <note pname="d" oct="4" dur="2"/>
+                <note xml:id="tw-b6-n3" pname="d" oct="4" dur="4"/>
+                <note xml:id="tw-b6-n4" pname="d" oct="4" dur="4"/>
               </layer></staff>
+              <tie startid="#tw-b6-n3" endid="#tw-b6-n4"/>
               <harm place="above" staff="1" tstamp="1" n="1">G7</harm>
               <harm place="below" staff="1" tstamp="1" n="2">V7</harm>
             </measure>

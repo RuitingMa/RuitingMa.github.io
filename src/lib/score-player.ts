@@ -105,6 +105,14 @@ interface Note {
   startMs: number;
   endMs: number;
   midi: number;
+  /** If present, audio sustains to this ms instead of `endMs` — used so
+   *  a tie-leading note plays through the whole tied duration without
+   *  the tie-trailing note re-attacking. `endMs` still bounds the
+   *  visual glow so the glyph goes dark when its beat is over. */
+  audioEndMs?: number;
+  /** False on tie-trailing notes so the scheduler skips them. Default
+   *  (undefined) is treated as true. */
+  playAudio?: boolean;
 }
 
 /**
@@ -318,6 +326,23 @@ async function renderMei(meiText: string): Promise<Rendered> {
         '[score] harm count mismatch — MEI:', meiOnsets.length,
         'SVG:', svgHarmIds.length, '— skipping harm sync',
       );
+    }
+
+    // Ties: `<tie startid="#X" endid="#Y"/>` means the X note sustains
+    // into Y without a re-attack. Extend X's audio range through Y,
+    // and mute Y in the audio scheduler. Visuals keep both notes so
+    // each glyph glows when its own beat is sounding.
+    const notesById = new Map<string, Note>();
+    for (const n of notes) notesById.set(n.id, n);
+    for (const tie of Array.from(meiDoc.querySelectorAll('tie'))) {
+      const startId = tie.getAttribute('startid')?.replace(/^#/, '');
+      const endId = tie.getAttribute('endid')?.replace(/^#/, '');
+      if (!startId || !endId) continue;
+      const startNote = notesById.get(startId);
+      const endNote = notesById.get(endId);
+      if (!startNote || !endNote) continue;
+      startNote.audioEndMs = endNote.endMs;
+      endNote.playAudio = false;
     }
   } catch (err) {
     console.warn('[score] MEI metadata extraction failed:', err);
@@ -666,8 +691,10 @@ class ScorePlayer {
     for (const note of this.sortedNotes) {
       if (note.startMs < fromMs) continue;
       if (note.startMs >= toMs) break;
+      if (note.playAudio === false) continue;
       const startT = this.iterStart + (iterBase + note.startMs) / 1000;
-      const endT = this.iterStart + (iterBase + note.endMs) / 1000;
+      const audioEnd = note.audioEndMs ?? note.endMs;
+      const endT = this.iterStart + (iterBase + audioEnd) / 1000;
       this.synth.play(note.midi, startT, endT);
     }
   }
