@@ -1124,6 +1124,26 @@ function applyLoopSpacing(panSvgs: SVGSVGElement[], headerWidth: number) {
   }
 }
 
+/** Loop mode: attach an out-of-flow phantom tile positioned `-musicWidth`
+ *  to the left of copy 1. It clones copy 1 (already header-stripped) so
+ *  when the pan is translated right — either in the pre-roll lead-in
+ *  pose, or when the reader drags backward past copy 1's start — the
+ *  stage-left region shows the loop's tail rather than empty space. Also
+ *  makes the wrap-left teleport (`while translateX > 0`) visually
+ *  seamless: the content the wrap "reveals" on the left matches what the
+ *  phantom was already drawing. */
+function appendLoopLeader(pan: HTMLElement, source: SVGSVGElement, musicWidth: number): void {
+  const leader = source.cloneNode(true) as SVGSVGElement;
+  leader.style.position = 'absolute';
+  leader.style.left = `-${musicWidth}px`;
+  leader.style.top = '0';
+  leader.style.height = '100%';
+  leader.style.width = 'auto';
+  leader.style.display = 'block';
+  leader.setAttribute('aria-hidden', 'true');
+  pan.appendChild(leader);
+}
+
 /** Set `--mask-start` / `--mask-end` CSS vars on the stage for the pan
  *  mask gradient. 0 → mask-start is fully transparent (pan hidden where
  *  the frozen overlay sits), mask-start → mask-end fades from 0 → 1,
@@ -1241,14 +1261,12 @@ function setupRenderLoop(args: {
           lastIterSeen = iter;
         }
         translateX = playheadPx - containerX + wrapOffset;
-        // Wrap only AFTER the first iteration is done. At iter=0 the
-        // initial translate is naturally positive — stage left of the
-        // playhead is simply the empty pre-music region. Wrapping there
-        // would teleport the pan to show the TAIL of the loop suddenly
-        // filling that empty region, which reads as "a duplicate score
-        // appearing" at first-note time. Once iter > 0 the copies are
-        // already tiled so the wrap is visually seamless.
-        if (iter > 0) {
+        // Keep translate in (-musicWidth, 0]. The phantom leader tile
+        // positioned at `-musicWidth` means either side of that range
+        // has identical content to what the wrap reveals — the snap
+        // is visually seamless. Skipping during pre-roll (ms<0) preserves
+        // the lead-in pose where translate is intentionally positive.
+        if (ms >= 0) {
           while (translateX <= -musicWidth) { translateX += musicWidth; wrapOffset += musicWidth; }
           while (translateX > 0) { translateX -= musicWidth; wrapOffset -= musicWidth; }
         }
@@ -1408,7 +1426,10 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
   if (frozenOverlay) stripStaffLinesFrom(frozenOverlay.host);
   for (const s of panSvgs) stripHeadersFrom(s);
 
-  if (loop) applyLoopSpacing(panSvgs, actualHeaderWidth);
+  if (loop) {
+    applyLoopSpacing(panSvgs, actualHeaderWidth);
+    appendLoopLeader(pan, panSvgs[0], musicWidth);
+  }
   setFadeMaskVars(stage, headerWidestWidth, playheadPx);
 
   const player = new ScorePlayer(rendered, loop, K.PRE_ROLL_MS, K.TAIL_MS);
