@@ -1,0 +1,386 @@
+---
+/*
+ * Begin sketch — 起 / ripple pond
+ *
+ * Stage for essays that want a quiet water-surface accompaniment. Listens
+ * for `stage:cue` events dispatched by EssayLayout's IntersectionObserver
+ * and shifts between named states. The cue names are pure conventions —
+ * any essay whose frontmatter sets stage: 'begin' can use them by
+ * annotating its sections with data-cue="<name>".
+ *
+ * Core cues:
+ *   empty   — nothing spawns; a held breath.
+ *   drop    — one strong centered drop on entry, then quiet.
+ *   many    — frequent random spawns across the whole surface.
+ *   still   — slow, weak spawns that fade gently.
+ *
+ * Grid-wave cues — ripples spawn at vertices of a tiled lattice,
+ * triggered in a staggered sweep. The first wave fires on entry; a
+ * fresh wave repeats every ~3.5s until the cue changes. Pattern is
+ * "<tiling>-<sweep>":
+ *   sq-rows / sq-cols / sq-diag
+ *   hex-rows / hex-cols / hex-diag
+ *
+ * Size modifiers (persist across cue changes until another modifier
+ * cue fires — they affect whatever spawns next, grid or otherwise):
+ *   small   — ripples at ~55% of their normal radius.
+ *   large   — ripples at ~155%.
+ *   (default is 100%; any non-modifier cue does not reset this.)
+ */
+---
+
+<canvas id="begin"></canvas>
+
+<script>
+  // See ParticleSketch for the init/cleanup lifecycle rationale. Same pattern.
+  let currentCleanup: (() => void) | null = null;
+
+  type Tiling = 'sq' | 'hex';
+  type Sweep = 'rows' | 'cols' | 'diag';
+
+  function init() {
+    if (currentCleanup) return;
+    const canvas = document.getElementById('begin') as HTMLCanvasElement | null;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d')!;
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    let w = 0, h = 0;
+
+    function resize() {
+      const rect = canvas!.getBoundingClientRect();
+      w = rect.width;
+      h = rect.height;
+      canvas!.width = w * dpr;
+      canvas!.height = h * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    resize();
+
+    // A ripple carries its OWN maxR at birth so a cue change mid-flight
+    // doesn't resize it. Without this, a tall `drop` ripple whose radius
+    // is still expanding would snap to the smaller radius of `many` the
+    // instant the cue changes — reads as the animation getting cut.
+    type Ripple = { cx: number; cy: number; born: number; strength: number; maxR: number };
+    const ripples: Ripple[] = [];
+    const LIFETIME = 8000;
+    const RING_COUNT = 4;
+    const RING_STAGGER = 0.07;
+    const EXPIRE_AT = 1 + (RING_COUNT - 1) * RING_STAGGER + 0.02;
+
+    // Base radii for the simple cues. `gap` null ⇒ no random auto-spawn
+    // (either disarmed or superseded by a grid wave). `maxR` is a
+    // fraction of min(w, h), resolved at spawn time.
+    const CUE = {
+      empty: { gap: null, maxR: 0.20, strength: 1 },
+      drop:  { gap: null, maxR: 0.36, strength: 1 },
+      many:  { gap: { min: 900, span: 1800 }, maxR: 0.22, strength: 1 },
+      still: { gap: { min: 4200, span: 5200 }, maxR: 0.18, strength: 0.6 },
+    } as const;
+    type SimpleCue = keyof typeof CUE;
+
+    // Grid-wave parameters.
+    const GRID_RIPPLE_RATIO = 0.09;   // per-vertex ripple maxR (frac of min(w,h))
+    const GRID_UNIT_DIV = 5.5;         // canvas-short-side / UNIT_DIV ≈ rows across
+    const SWEEP_DURATION = 1400;       // ms from first vertex fires to last
+    const WAVE_INTERVAL = 12000;       // ms between repeating waves while cue is held
+
+    // Size modifier — multiplies every new ripple's maxR, whether from
+    // drop / many / still / grid / pointer. Persists across cue changes
+    // until `small` or `large` (or a reset back to 1, currently none).
+    let sizeMultiplier = 1;
+
+    function spawn(cx: number, cy: number, strength: number, maxRRatio: number) {
+      ripples.push({
+        cx, cy,
+        born: t,
+        strength,
+        maxR: Math.min(w, h) * maxRRatio * sizeMultiplier,
+      });
+    }
+
+    // Time of the most recent centered drop, so re-entering the `drop`
+    // cue while the previous drop's ripple is still alive doesn't stack
+    // a second set of concentric rings on top of the first.
+    let lastDropAt = -Infinity;
+
+    // Current primary cue — tracked as free-form string because the
+    // grid-wave names are parsed rather than pre-enumerated.
+    let cue: string = 'empty';
+    let t = 0;
+    let lastNow = performance.now();
+    let paused = false;
+
+    // Simple-cue auto-spawn scheduling (many / still).
+    let nextSpawnAt = Infinity;
+
+    // Grid-wave state.
+    let gridTiling: Tiling | null = null;
+    let gridSweep: Sweep | null = null;
+    let nextWaveAt = Infinity;
+    // Scheduled ripples with future `at` timestamps. Drained each frame
+    // as `t` crosses their fire time. Cleared on any non-modifier cue
+    // change so a stale wave from the previous state can't continue
+    // spawning under the new state.
+    const schedule: Array<{ x: number; y: number; at: number; maxRRatio: number }> = [];
+
+    function computeGridPoints(tiling: Tiling): Array<{ i: number; j: number; x: number; y: number }> {
+      const unit = Math.max(48, Math.min(w, h) / GRID_UNIT_DIV);
+      const cols = Math.max(3, Math.floor(w / unit));
+      const out: Array<{ i: number; j: number; x: number; y: number }> = [];
+      if (tiling === 'sq') {
+        const rowStep = unit;
+        const rows = Math.max(3, Math.floor(h / rowStep));
+        const xMargin = (w - (cols - 1) * unit) / 2;
+        const yMargin = (h - (rows - 1) * rowStep) / 2;
+        for (let j = 0; j < rows; j++)
+          for (let i = 0; i < cols; i++)
+            out.push({ i, j, x: xMargin + i * unit, y: yMargin + j * rowStep });
+      } else {
+        // Hex: row step = unit × √3/2, every other row offset by unit/2.
+        // Pull the whole field back by unit/4 so the two row variants
+        // share a visual center.
+        const rowStep = unit * Math.sqrt(3) / 2;
+        const rows = Math.max(3, Math.floor(h / rowStep));
+        const xMargin = (w - (cols - 1) * unit) / 2 - unit * 0.25;
+        const yMargin = (h - (rows - 1) * rowStep) / 2;
+        for (let j = 0; j < rows; j++) {
+          const offset = (j % 2) * (unit * 0.5);
+          for (let i = 0; i < cols; i++)
+            out.push({ i, j, x: xMargin + i * unit + offset, y: yMargin + j * rowStep });
+        }
+      }
+      return out;
+    }
+
+    function scheduleWave() {
+      if (!gridTiling || !gridSweep) return;
+      const points = computeGridPoints(gridTiling);
+      let maxRow = 0, maxCol = 0;
+      for (const p of points) {
+        if (p.j > maxRow) maxRow = p.j;
+        if (p.i > maxCol) maxCol = p.i;
+      }
+      for (const p of points) {
+        let frac: number;
+        if (gridSweep === 'rows') frac = maxRow > 0 ? p.j / maxRow : 0;
+        else if (gridSweep === 'cols') frac = maxCol > 0 ? p.i / maxCol : 0;
+        else frac = (maxRow + maxCol) > 0 ? (p.i + p.j) / (maxRow + maxCol) : 0;
+        schedule.push({
+          x: p.x, y: p.y,
+          at: t + frac * SWEEP_DURATION,
+          maxRRatio: GRID_RIPPLE_RATIO,
+        });
+      }
+    }
+
+    function applyCue(next: string) {
+      // Size modifiers are pure parameter tweaks — they don't change the
+      // active cue or clear schedules. Affect the NEXT ripple only.
+      if (next === 'small')  { sizeMultiplier = 0.55; return; }
+      if (next === 'large')  { sizeMultiplier = 1.55; return; }
+
+      // Everything below is a cue transition. Clear pending grid ripples
+      // so a previous wave doesn't bleed into the new state.
+      const wasDrop = cue === 'drop';
+      schedule.length = 0;
+      gridTiling = null;
+      gridSweep = null;
+      nextWaveAt = Infinity;
+
+      // Grid-wave cue — format: "<sq|hex>-<rows|cols|diag>"
+      const m = next.match(/^(sq|hex)-(rows|cols|diag)$/);
+      if (m) {
+        gridTiling = m[1] as Tiling;
+        gridSweep = m[2] as Sweep;
+        cue = next;
+        nextSpawnAt = Infinity;    // grid overrides random auto-spawn
+        nextWaveAt = t + 20;       // fire first wave almost immediately
+        return;
+      }
+
+      // Simple cue (empty / drop / many / still). Unknown cue names are
+      // swallowed — keeps author typos from blowing up the stage.
+      if (!(next in CUE)) return;
+      cue = next;
+      const g = CUE[next as SimpleCue].gap;
+      nextSpawnAt = g ? t + g.min * 0.4 : Infinity;
+
+      // Entering `drop` plants one strong centered ripple — that's the
+      // whole point of this state. Guards:
+      //   - wasDrop: re-firing the same cue doesn't re-trigger.
+      //   - lastDropAt: bouncing through drop quickly won't stack rings
+      //     on a ripple that's still alive.
+      if (next === 'drop' && !wasDrop && t - lastDropAt > LIFETIME) {
+        spawn(w * 0.5, h * 0.5, 1.5, CUE.drop.maxR);
+        lastDropAt = t;
+      }
+    }
+
+    const onCue = (e: Event) => {
+      const d = (e as CustomEvent).detail as { cue?: string } | undefined;
+      if (typeof d?.cue === 'string') applyCue(d.cue);
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      const rect = canvas!.getBoundingClientRect();
+      // Pointer drops take the current cue's radius — they feel like
+      // they belong to whatever mood the canvas is in. For grid cues we
+      // use the smaller grid-ripple size so a click doesn't overwhelm
+      // the ongoing wave.
+      const maxR = (cue in CUE) ? CUE[cue as SimpleCue].maxR : GRID_RIPPLE_RATIO;
+      spawn(e.clientX - rect.left, e.clientY - rect.top, 1.1, maxR);
+    };
+    const onPause = (e: Event) => {
+      paused = !!(e as CustomEvent).detail?.paused;
+    };
+
+    window.addEventListener('stage:cue', onCue);
+    window.addEventListener('stage:pause', onPause);
+    window.addEventListener('resize', resize);
+    canvas.addEventListener('pointerdown', onPointerDown);
+
+    function easeOut(u: number) { return 1 - Math.pow(1 - u, 2.2); }
+
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let rafId = 0;
+    let aborted = false;
+
+    function drawRipples() {
+      ctx.fillStyle = '#0f0f10';
+      ctx.fillRect(0, 0, w, h);
+
+      ctx.strokeStyle = '#e6e2d6';
+      ctx.lineWidth = 0.7;
+      for (let i = ripples.length - 1; i >= 0; i--) {
+        const r = ripples[i];
+        const baseAge = (t - r.born) / LIFETIME;
+        if (baseAge >= EXPIRE_AT) {
+          ripples.splice(i, 1);
+          continue;
+        }
+        // Use the ripple's OWN maxR, captured at spawn — see Ripple type.
+        for (let k = 0; k < RING_COUNT; k++) {
+          const ringAge = baseAge - k * RING_STAGGER;
+          if (ringAge <= 0 || ringAge >= 1) continue;
+          const eased = easeOut(ringAge);
+          const radius = eased * r.maxR * r.strength;
+          const alpha = Math.sin(ringAge * Math.PI) * 0.34 * (1 - k * 0.18) * r.strength;
+          ctx.globalAlpha = alpha;
+          ctx.beginPath();
+          ctx.arc(r.cx, r.cy, radius, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    function frame() {
+      if (aborted) return;
+      rafId = requestAnimationFrame(frame);
+
+      const now = performance.now();
+      let dt = now - lastNow;
+      if (dt > 100) dt = 100;  // tab-return guard, same reason as LobbySketch
+      lastNow = now;
+      if (!paused) t += dt;
+
+      // Grid-wave scheduler: while a grid cue is active, enqueue a fresh
+      // wave every WAVE_INTERVAL. The wave itself takes SWEEP_DURATION
+      // to finish firing; the gap between the END of one wave and the
+      // start of the next is ~(WAVE_INTERVAL - SWEEP_DURATION).
+      if (!paused && gridTiling && gridSweep && t >= nextWaveAt) {
+        scheduleWave();
+        nextWaveAt = t + WAVE_INTERVAL;
+      }
+
+      // Drain scheduled grid ripples whose fire time has arrived.
+      for (let i = schedule.length - 1; i >= 0; i--) {
+        if (schedule[i].at <= t) {
+          const s = schedule[i];
+          spawn(s.x, s.y, 0.9, s.maxRRatio);
+          schedule.splice(i, 1);
+        }
+      }
+
+      // Simple-cue random auto-spawn (many / still). The while-loop
+      // catches up if we were tab-backgrounded — but note the dt clamp
+      // already prevents a huge burst here.
+      while (!paused && t >= nextSpawnAt) {
+        if (!(cue in CUE)) { nextSpawnAt = Infinity; break; }
+        const g = CUE[cue as SimpleCue].gap;
+        if (!g) { nextSpawnAt = Infinity; break; }
+        // Capture cue params on the ripple at birth — if cue flips before
+        // this ripple dies, it keeps the shape it was born into.
+        spawn(
+          Math.random() * w,
+          Math.random() * h,
+          CUE[cue as SimpleCue].strength,
+          CUE[cue as SimpleCue].maxR,
+        );
+        nextSpawnAt = t + g.min + Math.random() * g.span;
+      }
+
+      drawRipples();
+    }
+
+    if (reduced) {
+      // Render a single still frame of a couple mid-life ripples and stop.
+      canvas.removeEventListener('pointerdown', onPointerDown);
+      ctx.fillStyle = '#0f0f10';
+      ctx.fillRect(0, 0, w, h);
+      ctx.strokeStyle = '#e6e2d6';
+      ctx.lineWidth = 0.7;
+      const maxR = Math.min(w, h) * 0.22;
+      const frozen = [
+        { cx: w * 0.5, cy: h * 0.5, age: 0.35 },
+        { cx: w * 0.32, cy: h * 0.62, age: 0.6 },
+      ];
+      for (const r of frozen) {
+        for (let k = 0; k < RING_COUNT; k++) {
+          const ringAge = r.age - k * RING_STAGGER;
+          if (ringAge <= 0 || ringAge >= 1) continue;
+          const eased = easeOut(ringAge);
+          ctx.globalAlpha = Math.sin(ringAge * Math.PI) * 0.34 * (1 - k * 0.18);
+          ctx.beginPath();
+          ctx.arc(r.cx, r.cy, eased * maxR, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+      ctx.globalAlpha = 1;
+      currentCleanup = () => {
+        aborted = true;
+        window.removeEventListener('stage:cue', onCue);
+        window.removeEventListener('stage:pause', onPause);
+        window.removeEventListener('resize', resize);
+        currentCleanup = null;
+      };
+      document.addEventListener('astro:before-swap', () => currentCleanup?.(), { once: true });
+      return;
+    }
+
+    frame();
+
+    currentCleanup = () => {
+      aborted = true;
+      cancelAnimationFrame(rafId);
+      window.removeEventListener('stage:cue', onCue);
+      window.removeEventListener('stage:pause', onPause);
+      window.removeEventListener('resize', resize);
+      currentCleanup = null;
+    };
+    document.addEventListener('astro:before-swap', () => currentCleanup?.(), { once: true });
+  }
+
+  init();
+  document.addEventListener('astro:page-load', init);
+</script>
+
+<style>
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    background: var(--bg);
+    touch-action: none;
+  }
+</style>

@@ -1,0 +1,38 @@
+---
+import { getCollection, render } from 'astro:content';
+import EssayLayout from '../../layouts/EssayLayout.astro';
+import BeginSketch from '../../components/BeginSketch.astro';
+
+export async function getStaticPaths() {
+  const essays = await getCollection('essays');
+  return essays.map((entry) => ({
+    params: { slug: entry.id },
+    props: { entry },
+  }));
+}
+
+// Stage registry. Essays opt in via frontmatter `stage: <key>`. A new
+// reactive stage lives in src/components/, gets listed here, and is then
+// usable by any essay. Keep this list short and deliberate — one stage
+// per voice, not one per essay.
+const STAGES = {
+  begin: BeginSketch,
+} as const;
+type StageKey = keyof typeof STAGES;
+
+const { entry } = Astro.props;
+const { Content } = await render(entry);
+const stageKey = entry.data.stage as StageKey | undefined;
+const StageComponent = stageKey && stageKey in STAGES ? STAGES[stageKey] : null;
+---
+
+<EssayLayout
+  title={entry.data.title}
+  date={entry.data.date}
+  kind={entry.data.kind}
+  summary={entry.data.summary}
+  tint={entry.data.tint}
+>
+  {StageComponent && <StageComponent slot="stage" />}
+  <Content />
+</EssayLayout>
