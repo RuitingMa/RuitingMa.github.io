@@ -1,0 +1,362 @@
+---
+/*
+ * Score — Verovio-rendered music notation, inline in essays.
+ *
+ * Usage inside an .mdx essay:
+ *
+ *   <Score slug="twinkle" />            — plays once, stops at end
+ *   <Score slug="ii-V-I" loop />        — loops forever, click again to stop
+ *
+ * The component is a thin shell. All work (lazy Verovio load, synthesis,
+ * scroll sync, staff-lines layer, overlay) lives in src/lib/score-player.ts.
+ *
+ * Stage layering (bottom → top):
+ *   .score-staff-lines   — single stage-wide source of the 5 staff lines,
+ *                          drawn once. Pan and overlay are stripped so
+ *                          no overlap thickening is possible.
+ *   .score-pan-mask      — wraps .score-pan in a non-transforming parent
+ *                          so its mask-image stays in stage coordinates.
+ *                          Left-edge fade zone makes notes fade out as
+ *                          they scroll toward the overlay.
+ *   .score-pan           — transforms (translateX) to scroll music past
+ *                          the playhead.
+ *   .score-frozen-overlay — clef/keysig/meter glyphs pinned at the left.
+ *                          No background — pan is already masked to 0 in
+ *                          this area, and the staff-lines layer is below.
+ *   .score-playhead      — fixed vertical line.
+ *   .score-hint          — "click to play" before first play.
+ */
+interface Props {
+  slug: string;
+  loop?: boolean;
+  /** Fraction across the stage where the playhead sits (0 = left, 1 = right). */
+  playhead?: number;
+  /** Stage height in px. */
+  height?: number;
+}
+
+const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
+---
+
+<figure
+  class="score"
+  data-slug={slug}
+  data-playhead={playhead}
+  data-loop={loop ? '' : null}
+  style={`--score-h: ${height}px; --score-playhead: ${playhead * 100}%`}
+>
+  <div class="score-stage" role="button" tabindex="0" aria-label="play or pause score">
+    <div class="score-pan-mask" aria-hidden="true">
+      <div class="score-pan"></div>
+    </div>
+    <div class="score-blur-in" aria-hidden="true"></div>
+    <div class="score-playhead" aria-hidden="true"></div>
+    <div class="score-hint" aria-hidden="true">click to play</div>
+  </div>
+</figure>
+
+<script>
+  import { attachAllScores, detachAllScores } from '../lib/score-player.ts';
+  attachAllScores();
+  document.addEventListener('astro:page-load', attachAllScores);
+  document.addEventListener('astro:before-swap', detachAllScores);
+</script>
+
+<style>
+  .score {
+    margin: 2.2em 0;
+    padding: 0;
+  }
+
+  .score-stage {
+    position: relative;
+    width: 100%;
+    height: var(--score-h, 200px);
+    overflow: hidden;
+    cursor: grab;
+    /* Prevent the browser's native touch-scrolling so our drag handler
+       owns horizontal gestures. Vertical scrolling of the page still
+       passes through because `touch-action: pan-y` allows it. */
+    touch-action: pan-y;
+    user-select: none;
+    -webkit-user-select: none;
+    /* Global right-edge fade. Affects staff-lines, pan, overlay —
+       everything inside the stage. This is what makes the staff lines
+       fade in as they enter from the right. Pan then stacks ADDITIONAL
+       right-edge fade so notes appear after staff lines; see the pan
+       mask definition. */
+    -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 4%, #000 93%, transparent 100%);
+            mask-image: linear-gradient(90deg, transparent 0%, #000 4%, #000 93%, transparent 100%);
+    background: transparent;
+  }
+  .score-stage:active {
+    cursor: grabbing;
+  }
+    /* Outer horizontal feather so music entering/exiting the stage
+       doesn't snap at the edges. The left fade also softens the
+       overlay's boundary into the body. */
+    -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 4%, #000 96%, transparent 100%);
+            mask-image: linear-gradient(90deg, transparent 0%, #000 4%, #000 96%, transparent 100%);
+    background: transparent;
+    /* Mask-fade positions — set from JS once header width is known. */
+    --mask-start: 0px;
+    --mask-end: 0px;
+  }
+  .score-stage:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 4px;
+  }
+
+  /* === Dedicated staff-lines layer ================================== */
+  /* A fresh SVG at stage level with 5 horizontal lines. Single source of
+     truth for staff lines — pan's SVGs and the overlay's SVG have their
+     staff paths stripped so there's no way for two lines to overlap and
+     read as a thicker line. */
+  .score-stage :global(.score-staff-lines) {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 0;
+    color: var(--fg-dim);
+  }
+  .score-stage :global(.score-staff-lines line) {
+    stroke: currentColor;
+    stroke-width: 1;
+    fill: none;
+    vector-effect: non-scaling-stroke;
+  }
+
+  /* === Pan mask ===================================================== */
+  /* Lives on this wrapper (not on .score-pan itself) so its gradient
+     stays in stage coordinates — if it lived on .score-pan, every
+     translateX would drag the fade along with the music.
+     Three zones, left to right:
+       - 0 → --mask-start:         opacity 0  (hidden under the overlay)
+       - --mask-start → --mask-end: opacity 0→1 (fade in past overlay)
+       - --mask-end → --pan-right:  opacity 1  (main visible area)
+       - --pan-right → 100%:        opacity 1→0 (right-edge entrance fade,
+           wider than the stage's own right fade so notes appear LATER
+           than the staff lines)
+     The result: as a note scrolls in from the right, staff lines appear
+     first (via the stage mask, which fades in a narrower zone), then
+     the note itself fades in with the blur-to-sharp handled by the
+     .score-blur-in overlay. */
+  .score-pan-mask {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 1;
+    overflow: visible;
+    -webkit-mask-image: linear-gradient(
+      90deg,
+      transparent 0,
+      transparent var(--mask-start, 0px),
+      #000 var(--mask-end, 0px),
+      #000 82%,
+      transparent 98%
+    );
+    mask-image: linear-gradient(
+      90deg,
+      transparent 0,
+      transparent var(--mask-start, 0px),
+      #000 var(--mask-end, 0px),
+      #000 82%,
+      transparent 98%
+    );
+  }
+
+  .score-pan {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    will-change: transform, opacity;
+    transform: translateX(0);
+    opacity: 1;
+    transition: opacity var(--reset-fade, 400ms) ease-out;
+  }
+  /* Applied when a finished non-loop score is being rewound. Pan fades
+     out, JS snaps pausedAt to 0, then the class is removed so opacity
+     transitions back to 1 — giving a clean "fade back to start" feel
+     without any visible mid-score snap. */
+  .score-pan.is-resetting {
+    opacity: 0;
+  }
+  .score-pan :global(svg) {
+    display: block;
+    height: 100%;
+    width: auto;
+    color: var(--fg-dim);
+  }
+  .score-pan :global(svg .note),
+  .score-pan :global(svg .rest),
+  .score-pan :global(svg .stem),
+  .score-pan :global(svg .barLine),
+  .score-pan :global(svg .harm),
+  .score-pan :global(svg .dynam) {
+    fill: currentColor;
+    stroke: currentColor;
+  }
+
+  /* === Active-note / active-harm glow ===============================
+     When a note (or chord symbol / functional label) is sounding, the
+     render loop in score-player.ts adds `.is-active` to every matching
+     element across all SVG copies. CSS here handles the visual:
+       - color shifts to the page's --accent
+       - a feathered drop-shadow stack simulates a soft glow
+       - an animation curves the glow from peak at attack to a dimmer
+         steady state (approximating B's "brightness decays during
+         sustain" feel)
+       - transitions on filter/color smooth the class-removal fade-out
+         so the note doesn't snap back when its sustain ends
+     Three drop-shadow layers give depth: tight + medium + wide,
+     creating the羽化 gradient from bright center to soft periphery. */
+  .score-pan :global(svg .note),
+  .score-pan :global(svg .harm) {
+    transition:
+      filter 500ms cubic-bezier(0.22, 1, 0.36, 1),
+      color 280ms ease-out;
+  }
+  .score-pan :global(svg .note.is-active),
+  .score-pan :global(svg .harm.is-active) {
+    color: var(--accent);
+    animation: score-glow 2s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  @keyframes score-glow {
+    0% {
+      filter:
+        drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 95%, transparent))
+        drop-shadow(0 0 9px color-mix(in srgb, var(--accent) 60%, transparent))
+        drop-shadow(0 0 20px color-mix(in srgb, var(--accent) 30%, transparent));
+    }
+    100% {
+      filter:
+        drop-shadow(0 0 2px color-mix(in srgb, var(--accent) 55%, transparent))
+        drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 20%, transparent));
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .score-pan :global(svg .note.is-active),
+    .score-pan :global(svg .harm.is-active) {
+      animation: none;
+      filter: none;
+    }
+  }
+
+  /* === Frozen header overlay ======================================== */
+  /* Holds the clef + keysig + meter glyphs only. No staff lines (those
+     are in .score-staff-lines). No background either — the pan mask
+     already drops music to zero opacity in this region, and the
+     staff-lines layer sits below the overlay, so there's nothing to
+     hide here. */
+  .score-stage :global(.score-frozen-overlay) {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 2;
+  }
+  .score-stage :global(.score-frozen-overlay svg) {
+    display: block;
+    height: 100%;
+    width: auto;
+    color: var(--fg-dim);
+  }
+  .score-stage :global(.score-frozen-overlay svg *) {
+    fill: currentColor;
+    stroke: currentColor;
+  }
+
+  /* === Right-edge blur-in =============================================
+     A thin overlay on the stage's right edge that applies a gradient
+     backdrop-filter blur. Music scrolling in from the right passes
+     through this zone and sharpens as it approaches the main area.
+     Combined with the stage's outer opacity mask, notes fade + sharpen
+     into visibility rather than snapping in. */
+  .score-blur-in {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 14%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 4;
+    /* Mask: transparent at LEFT (no blur effect), opaque at RIGHT
+       (full blur). Because this div only exists in the right 14% of
+       the stage, the gradient means blur ramps from 0 at ~stage 86%
+       up to full at the stage's right edge. */
+    -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 100%);
+            mask-image: linear-gradient(90deg, transparent 0%, #000 100%);
+    -webkit-backdrop-filter: blur(3px);
+            backdrop-filter: blur(3px);
+  }
+  @supports not (backdrop-filter: blur(1px)) {
+    .score-blur-in { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .score-blur-in { display: none; }
+  }
+  /* While the reader is actively dragging, the pan translates every frame
+     and backdrop-filter has to re-sample its backdrop with each move —
+     that's the main source of drag stutter. Suspend it until pointerup. */
+  .score-stage.is-dragging .score-blur-in {
+    -webkit-backdrop-filter: none;
+            backdrop-filter: none;
+  }
+
+  /* === Playhead ===================================================== */
+  .score-playhead {
+    position: absolute;
+    top: 6%;
+    bottom: 6%;
+    width: 1px;
+    background: color-mix(in srgb, var(--fg-dim) 35%, transparent);
+    pointer-events: none;
+    z-index: 3;
+    transition: background 250ms ease;
+  }
+  .score.is-playing .score-playhead {
+    background: var(--accent);
+  }
+
+  /* === Hint ========================================================= */
+  .score-hint {
+    position: absolute;
+    right: 8%;
+    bottom: 8%;
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: var(--muted);
+    pointer-events: none;
+    transition: opacity 400ms ease;
+    opacity: 0.7;
+    z-index: 5;
+  }
+  .score.is-playing .score-hint {
+    opacity: 0;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .score-pan {
+      transform: none !important;
+      transition: none !important;
+    }
+    .score-stage {
+      overflow: auto;
+    }
+  }
+</style>

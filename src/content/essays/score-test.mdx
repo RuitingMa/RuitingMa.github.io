@@ -1,0 +1,24 @@
+---
+title: score test
+date: "2026-04-19"
+kind: TEST
+summary: throwaway — verifies the Score component, MDX, looping, and scroll sync.
+tint: mist
+stage: begin
+---
+
+import Score from '../../components/Score.astro';
+
+<section data-cue="empty">
+
+A Score embedded below plays through once. Click the staff to start, click again to pause.
+
+<Score slug="twinkle" />
+
+Next is a short ii–V–I progression tagged `loop`. It keeps repeating until clicked off.
+
+<Score slug="ii-V-I" loop />
+
+That's it.
+
+</section>

@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mei xmlns="http://www.music-encoding.org/ns/mei" meiversion="5.0">
+  <meiHead>
+    <fileDesc>
+      <titleStmt><title>Twinkle Twinkle Little Star (jazz test)</title></titleStmt>
+      <pubStmt/>
+    </fileDesc>
+  </meiHead>
+  <music>
+    <body>
+      <mdiv>
+        <score>
+          <scoreDef meter.count="4" meter.unit="4" key.sig="0" midi.bpm="92">
+            <staffGrp>
+              <staffDef n="1" lines="5" clef.shape="G" clef.line="2"/>
+            </staffGrp>
+          </scoreDef>
+          <section>
+            <!-- Bar 1 — Twinkle twinkle, Cmaj7, I -->
+            <measure n="1">
+              <staff n="1"><layer n="1">
+                <note pname="c" oct="4" dur="4"/>
+                <note pname="c" oct="4" dur="4"/>
+                <note pname="g" oct="4" dur="4"/>
+                <note pname="g" oct="4" dur="4"/>
+              </layer></staff>
+              <harm place="above" staff="1" tstamp="1">Cmaj7</harm>
+              <harm place="below" staff="1" tstamp="1">I</harm>
+            </measure>
+
+            <!-- Bar 2 — little star, Am7, vi -->
+            <measure n="2">
+              <staff n="1"><layer n="1">
+                <note pname="a" oct="4" dur="4"/>
+                <note pname="a" oct="4" dur="4"/>
+                <note pname="g" oct="4" dur="2"/>
+              </layer></staff>
+              <harm place="above" staff="1" tstamp="1">Am7</harm>
+              <harm place="below" staff="1" tstamp="1">vi</harm>
+            </measure>
+
+            <!-- Bar 3 — How I wonder, Fmaj7, IV -->
+            <measure n="3">
+              <staff n="1"><layer n="1">
+                <note pname="f" oct="4" dur="4"/>
+                <note pname="f" oct="4" dur="4"/>
+                <note pname="e" oct="4" dur="4"/>
+                <note pname="e" oct="4" dur="4"/>
+              </layer></staff>
+              <harm place="above" staff="1" tstamp="1">Fmaj7</harm>
+              <harm place="below" staff="1" tstamp="1">IV</harm>
+            </measure>
+
+            <!-- Bar 4 — what you are, Dm7 → G7 (ii-V), resolving to I next bar -->
+            <measure n="4">
+              <staff n="1"><layer n="1">
+                <note pname="d" oct="4" dur="4"/>
+                <note pname="d" oct="4" dur="4"/>
+                <note pname="c" oct="4" dur="2"/>
+              </layer></staff>
+              <harm place="above" staff="1" tstamp="1">Dm7</harm>
+              <harm place="above" staff="1" tstamp="3">G7</harm>
+              <harm place="below" staff="1" tstamp="1">ii</harm>
+              <harm place="below" staff="1" tstamp="3">V7</harm>
+            </measure>
+
+            <!-- Bar 5 — Up above, Cmaj7, I -->
+            <measure n="5">
+              <staff n="1"><layer n="1">
+                <note pname="g" oct="4" dur="4"/>
+                <note pname="g" oct="4" dur="4"/>
+                <note pname="f" oct="4" dur="4"/>
+                <note pname="f" oct="4" dur="4"/>
+              </layer></staff>
+              <harm place="above" staff="1" tstamp="1">Cmaj7</harm>
+              <harm place="below" staff="1" tstamp="1">I</harm>
+            </measure>
+
+            <!-- Bar 6 — the world so high, G7, V7 -->
+            <measure n="6">
+              <staff n="1"><layer n="1">
+                <note pname="e" oct="4" dur="4"/>
+                <note pname="e" oct="4" dur="4"/>
+                <note pname="d" oct="4" dur="2"/>
+              </layer></staff>
+              <harm place="above" staff="1" tstamp="1">G7</harm>
+              <harm place="below" staff="1" tstamp="1">V7</harm>
+            </measure>
+
+            <!-- Bar 7 — Like a diamond, C/E, I⁶ -->
+            <measure n="7">
+              <staff n="1"><layer n="1">
+                <note pname="g" oct="4" dur="4"/>
+                <note pname="g" oct="4" dur="4"/>
+                <note pname="f" oct="4" dur="4"/>
+                <note pname="f" oct="4" dur="4"/>
+              </layer></staff>
+              <harm place="above" staff="1" tstamp="1">C/E</harm>
+              <harm place="below" staff="1" tstamp="1">I⁶</harm>
+            </measure>
+
+            <!-- Bar 8 — in the sky, ii-V-I cadence -->
+            <measure n="8">
+              <staff n="1"><layer n="1">
+                <note pname="e" oct="4" dur="4"/>
+                <note pname="e" oct="4" dur="4"/>
+                <note pname="d" oct="4" dur="4"/>
+                <note pname="c" oct="4" dur="4"/>
+              </layer></staff>
+              <harm place="above" staff="1" tstamp="1">Dm7</harm>
+              <harm place="above" staff="1" tstamp="3">G7</harm>
+              <harm place="below" staff="1" tstamp="1">ii</harm>
+              <harm place="below" staff="1" tstamp="3">V7</harm>
+            </measure>
+          </section>
+        </score>
+      </mdiv>
+    </body>
+  </music>
+</mei>
