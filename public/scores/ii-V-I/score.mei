@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mei xmlns="http://www.music-encoding.org/ns/mei" meiversion="5.0">
+  <meiHead>
+    <fileDesc>
+      <titleStmt><title>ii – V – I (jazz cadence, loopable)</title></titleStmt>
+      <pubStmt/>
+    </fileDesc>
+  </meiHead>
+  <music>
+    <body>
+      <mdiv>
+        <score>
+          <scoreDef meter.count="4" meter.unit="4" key.sig="0" midi.bpm="88">
+            <staffGrp>
+              <staffDef n="1" lines="5" clef.shape="G" clef.line="2"/>
+            </staffGrp>
+          </scoreDef>
+          <section>
+            <!-- Bar 1: Dm7 | G7, melody outlines chord tones -->
+            <measure n="1">
+              <staff n="1"><layer n="1">
+                <note pname="d" oct="4" dur="4"/>
+                <note pname="f" oct="4" dur="4"/>
+                <note pname="b" oct="3" dur="4"/>
+                <note pname="d" oct="4" dur="4"/>
+              </layer></staff>
+              <harm place="above" staff="1" tstamp="1">Dm7</harm>
+              <harm place="above" staff="1" tstamp="3">G7</harm>
+              <harm place="below" staff="1" tstamp="1">ii</harm>
+              <harm place="below" staff="1" tstamp="3">V7</harm>
+            </measure>
+
+            <!-- Bar 2: Cmaj7, whole note on the 3rd, suspended into air -->
+            <measure n="2">
+              <staff n="1"><layer n="1">
+                <note pname="e" oct="4" dur="1"/>
+              </layer></staff>
+              <harm place="above" staff="1" tstamp="1">Cmaj7</harm>
+              <harm place="below" staff="1" tstamp="1">I</harm>
+            </measure>
+          </section>
+        </score>
+      </mdiv>
+    </body>
+  </music>
+</mei>
