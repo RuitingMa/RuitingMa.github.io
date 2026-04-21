@@ -225,10 +225,22 @@ const tintClass = tint ? `tint-${tint}` : '';
     color: var(--accent);
   }
 
-  @media (max-width: 860px) {
+  /* Portrait-only: relax section min-heights, since a short 30svh sticky
+     canvas + tall 72vh sections would force too many scrolls per piece.
+     Landscape phones fall through to the desktop pacing.
+
+     Last-child also drops its min-height here — otherwise its desktop
+     40vh + flex-center would push the final section's content to the
+     middle of its box, creating a bigger lead-in gap than preceding
+     sections. Its padding-bottom: 35vh stays (inherited from the
+     desktop last-child rule) as the intentional trailing quiet.  */
+  @media (max-width: 860px) and (orientation: portrait) {
     .body :global(section) {
       min-height: 0;
       padding: 1.6em 0;
+    }
+    .body :global(section:last-child) {
+      min-height: 0;
     }
   }
 </style>
