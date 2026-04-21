@@ -97,16 +97,6 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
   .score-stage:active {
     cursor: grabbing;
   }
-    /* Outer horizontal feather so music entering/exiting the stage
-       doesn't snap at the edges. The left fade also softens the
-       overlay's boundary into the body. */
-    -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 4%, #000 96%, transparent 100%);
-            mask-image: linear-gradient(90deg, transparent 0%, #000 4%, #000 96%, transparent 100%);
-    background: transparent;
-    /* Mask-fade positions — set from JS once header width is known. */
-    --mask-start: 0px;
-    --mask-end: 0px;
-  }
   .score-stage:focus-visible {
     outline: 1px solid var(--accent);
     outline-offset: 4px;
