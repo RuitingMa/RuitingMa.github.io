@@ -18,6 +18,16 @@
 @font-face{font-family:'Huiwen Mincho Fallback';src:local('Songti SC'),local('STSong'),local('SimSun');ascent-override:83.10%;descent-override:22.10%;line-gap-override:0.00%}
 
 @font-face {
+  font-family: 'Huiwen Kaiti';
+  src: url('/fonts/dev/kaiti.woff2') format('woff2');
+  font-display: fallback;
+  font-weight: 400;
+  font-style: normal;
+}
+
+@font-face{font-family:'Huiwen Kaiti Fallback';src:local('Kaiti SC'),local('STKaiti'),local('KaiTi');ascent-override:83.10%;descent-override:22.10%;line-gap-override:0.00%}
+
+@font-face {
   font-family: 'Huiwen Fangsong';
   src: url('/fonts/dev/fangsong.woff2') format('woff2');
   font-display: fallback;
@@ -26,3 +36,13 @@
 }
 
 @font-face{font-family:'Huiwen Fangsong Fallback';src:local('FangSong'),local('STFangsong');ascent-override:83.10%;descent-override:22.10%;line-gap-override:0.00%}
+
+@font-face {
+  font-family: 'Huiwen HKHei';
+  src: url('/fonts/dev/hkhei.woff2') format('woff2');
+  font-display: fallback;
+  font-weight: 400;
+  font-style: normal;
+}
+
+@font-face{font-family:'Huiwen HKHei Fallback';src:local('PingFang SC'),local('Heiti SC'),local('STHeiti'),local('Microsoft YaHei');ascent-override:83.10%;descent-override:22.10%;line-gap-override:0.00%}

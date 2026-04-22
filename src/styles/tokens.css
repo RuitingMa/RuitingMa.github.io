@@ -50,6 +50,12 @@
   --font-body: 'Huiwen Fangsong', 'Huiwen Fangsong Fallback', 'FangSong', 'STFangsong', serif;
   /* mono: dates, code, metadata — system monospace */
   --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, 'Cascadia Code', monospace;
+  /* Extra display faces held out for one-off sketches. The 404 glitch
+     piece cycles through all four Huiwen families; these activate
+     Kaiti / HKHei for that sketch only. Per-page subsetting means pages
+     that don't reference them never download them. */
+  --font-kaiti: 'Huiwen Kaiti', 'Huiwen Kaiti Fallback', 'Kaiti SC', 'STKaiti', 'KaiTi', cursive;
+  --font-hkhei: 'Huiwen HKHei', 'Huiwen HKHei Fallback', 'PingFang SC', 'Heiti SC', 'Microsoft YaHei', sans-serif;
 }
 
 /* === Paper mode (opt-in per page) === */
