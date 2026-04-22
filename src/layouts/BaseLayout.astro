@@ -8,6 +8,11 @@ interface Props {
   /** Absolute path under /public, e.g. "/og/hello-world.png". */
   image?: string;
   mode?: 'ink' | 'paper';
+  /** Override portrait-mobile stage height. Any valid CSS length; default
+      30svh. Pages whose stage wants more breathing room (e.g. 404) pass a
+      larger value. Feeds a CSS variable consumed by the mobile media
+      query below — desktop layout isn't affected. */
+  stageHeightMobile?: string;
 }
 const SITE_NAME = '眠海';
 const DEFAULT_DESCRIPTION = '眠海 / SUNKEN KEEP — 生成式与交互作品的陈列。';
@@ -16,6 +21,7 @@ const {
   description = DEFAULT_DESCRIPTION,
   image,
   mode = 'ink',
+  stageHeightMobile = '30svh',
 } = Astro.props;
 const fullTitle = title === SITE_NAME ? SITE_NAME : `${title} · ${SITE_NAME}`;
 const canonicalURL = new URL(Astro.url.pathname, Astro.site);
@@ -23,7 +29,7 @@ const ogImage = image ? new URL(image, Astro.site).toString() : undefined;
 ---
 
 <!DOCTYPE html>
-<html lang="zh-CN" class:list={[mode === 'paper' && 'paper']}>
+<html lang="zh-CN" class:list={[mode === 'paper' && 'paper']} style={`--stage-h-mobile: ${stageHeightMobile}`}>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -127,7 +133,16 @@ const ogImage = image ? new URL(image, Astro.site).toString() : undefined;
 
         const dismiss = () => {
           try { localStorage.setItem(KEY, '1'); } catch {}
-          document.body.classList.remove('show-rotate-hint');
+          const body = document.body;
+          if (!body.classList.contains('show-rotate-hint')) return;
+          // Run the leave animation, then drop both classes. display:flex
+          // stays active (via .show-rotate-hint) throughout the fade, so
+          // the overlay remains visible while opacity animates to 0.
+          body.classList.add('rotate-hint-leaving');
+          window.setTimeout(() => {
+            body.classList.remove('show-rotate-hint');
+            body.classList.remove('rotate-hint-leaving');
+          }, 460);
         };
 
         const wire = () => {
@@ -365,8 +380,10 @@ const ogImage = image ? new URL(image, Astro.site).toString() : undefined;
           position: sticky;
           top: 0;
           /* svh = small viewport height, ignores dynamic URL bar on mobile.
-             Without it, heights jump when Safari collapses its chrome.  */
-          height: 30svh;
+             Without it, heights jump when Safari collapses its chrome.
+             Defaults to 30svh; any page passing stageHeightMobile to
+             BaseLayout overrides via the --stage-h-mobile root var.  */
+          height: var(--stage-h-mobile, 30svh);
           z-index: 1;
           border-right: none;
           /* Hard 1px rule replaced by the body::before fade strip below,
@@ -401,7 +418,7 @@ const ogImage = image ? new URL(image, Astro.site).toString() : undefined;
           z-index: 2;
         }
         body::before {
-          top: calc(30svh - 0.8em);
+          top: calc(var(--stage-h-mobile, 30svh) - 0.8em);
           height: 3.3em;
           background: linear-gradient(
             to bottom,
@@ -448,6 +465,16 @@ const ogImage = image ? new URL(image, Astro.site).toString() : undefined;
       @media (max-width: 860px) and (orientation: portrait) {
         body.show-rotate-hint .rotate-hint { display: flex; }
       }
+      /* Fade-out on dismiss. JS adds .rotate-hint-leaving before removing
+         .show-rotate-hint after the animation finishes, so display:flex
+         stays active while opacity animates to 0. */
+      @keyframes rotate-hint-leave {
+        from { opacity: 1; }
+        to   { opacity: 0; }
+      }
+      body.rotate-hint-leaving .rotate-hint {
+        animation: rotate-hint-leave 460ms ease-out both;
+      }
       .rotate-hint-card {
         text-align: center;
         color: var(--fg);
@@ -459,10 +486,13 @@ const ogImage = image ? new URL(image, Astro.site).toString() : undefined;
         color: var(--accent);
         animation: rotate-hint-turn 3.6s cubic-bezier(0.65, 0, 0.35, 1) infinite;
       }
+      /* Loop: hold portrait, rotate to landscape, hold, rotate back,
+         hold briefly, repeat. The end state matches the start so the
+         infinite cycle is seamless instead of snapping back. */
       @keyframes rotate-hint-turn {
-        0%, 20%  { transform: rotate(0deg); }
-        45%, 70% { transform: rotate(-90deg); }
-        95%, 100% { transform: rotate(-90deg); }
+        0%, 15%   { transform: rotate(0deg); }
+        40%, 65%  { transform: rotate(-90deg); }
+        90%, 100% { transform: rotate(0deg); }
       }
       .rotate-hint-text {
         font-family: var(--font-body);
@@ -483,6 +513,7 @@ const ogImage = image ? new URL(image, Astro.site).toString() : undefined;
       @media (prefers-reduced-motion: reduce) {
         .rotate-hint { animation: none; }
         .rotate-hint-icon { animation: none; transform: rotate(-90deg); }
+        body.rotate-hint-leaving .rotate-hint { animation: none; opacity: 0; }
       }
     </style>
   </body>

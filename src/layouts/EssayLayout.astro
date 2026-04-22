@@ -82,7 +82,20 @@ const tintClass = tint ? `tint-${tint}` : '';
         // Pick the section with the largest top ≤ line — i.e., the last
         // one whose heading has crossed the reading line. Before any
         // section crosses (top of page), fall back to the first.
-        const line = window.innerHeight * 0.35;
+        //
+        // Reading-line position differs by layout. On desktop each
+        // section is min-height 72vh + flex-centered, so a section's
+        // bounding-top sits well above its visible content — a line at
+        // 35% fires when content is in the lower third (entering the
+        // reader's attention). On portrait mobile the section hugs its
+        // content (just 3em padding), so 35% would fire only after the
+        // content was already in the user's focus zone — feels late.
+        // Drop the line to 65% there so the cue fires as the section
+        // enters, matching the desktop "about to read" feel.
+        const portraitMobile =
+          window.innerWidth <= 860 &&
+          window.matchMedia('(orientation: portrait)').matches;
+        const line = window.innerHeight * (portraitMobile ? 0.65 : 0.35);
         best = null;
         let bestTop = -Infinity;
         for (const n of nodes) {
@@ -229,6 +242,10 @@ const tintClass = tint ? `tint-${tint}` : '';
      canvas + tall 72vh sections would force too many scrolls per piece.
      Landscape phones fall through to the desktop pacing.
 
+     Padding stays generous (≈3em) so the border-top between sections
+     feels like a breath, not a seam — desktop gets this for free via
+     flex-centered 72vh sections, mobile needs it spelled out.
+
      Last-child also drops its min-height here — otherwise its desktop
      40vh + flex-center would push the final section's content to the
      middle of its box, creating a bigger lead-in gap than preceding
@@ -237,7 +254,7 @@ const tintClass = tint ? `tint-${tint}` : '';
   @media (max-width: 860px) and (orientation: portrait) {
     .body :global(section) {
       min-height: 0;
-      padding: 1.6em 0;
+      padding: 3em 0;
     }
     .body :global(section:last-child) {
       min-height: 0;
