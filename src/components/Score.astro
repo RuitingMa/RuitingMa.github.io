@@ -56,7 +56,7 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
 </figure>
 
 <script>
-  import { attachAllScores, detachAllScores } from '../lib/score-player.ts';
+  import { attachAllScores, detachAllScores } from '../lib/score';
   attachAllScores();
   document.addEventListener('astro:page-load', attachAllScores);
   document.addEventListener('astro:before-swap', detachAllScores);
@@ -71,12 +71,13 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
   .score-stage {
     position: relative;
     width: 100%;
-    /* Author-supplied `--score-h` is the preferred height on roomy
-       viewports; on narrower screens we shrink it proportionally so the
-       reserved header + playhead zone still fits with room for music.
-       The JS-side geometry reads this actual height and scales
-       HEADER_MAX_PX / PLAYHEAD_OFFSET_PX in step. */
-    height: min(var(--score-h, 200px), 45vw);
+    /* `--score-h` is set by the inline style (author baseline) and
+       further multiplied by JS for multi-staff pieces. The vw cap is a
+       narrow-viewport fallback so a tall multi-staff score doesn't
+       overflow phone screens — kept generous (90vw) so it only kicks
+       in on extreme squeeze, and JS already enforces an 80vh ceiling
+       upstream. */
+    height: min(var(--score-h, 200px), 90vw);
     overflow: hidden;
     cursor: grab;
     /* Prevent the browser's native touch-scrolling so our drag handler
@@ -147,6 +148,18 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
     height: 100%;
     z-index: 1;
     overflow: visible;
+    /* Three zones, left to right:
+         0 → mask-start            transparent (overlay area)
+         mask-start → mask-end     fade transparent → opaque
+         mask-end → 82%            opaque (music area)
+         82% → 98%                 right-edge entrance fade
+       The fade between mask-start and mask-end is what gives the
+       gentle "音符淡出" — notes scrolling INTO the chrome ease their
+       opacity down rather than snapping off. A persistent half-
+       visible m1 tempo marking (e.g. "Allegretto") used to bleed
+       through this zone because the shell included `.tempo` glyphs;
+       that's now stripped from MEASURE_MUSIC_CLASSES so the only
+       text crossing this fade is mid-piece annotations in transit. */
     -webkit-mask-image: linear-gradient(
       90deg,
       transparent 0,
@@ -174,8 +187,17 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
     flex-direction: row;
     flex-wrap: nowrap;
     align-items: stretch;
+    /* `will-change: transform` plus `translate3d` in the rAF loop
+       promote the pan to its own GPU layer so per-frame translations
+       are pure compositor moves, not browser repaints. `contain` tells
+       the engine that nothing outside the pan can affect or be affected
+       by its layout/paint, freeing the rest of the page from
+       invalidation when the pan transforms. Critical for long pieces
+       where the pan SVG can be tens of thousands of px wide. */
     will-change: transform, opacity;
-    transform: translateX(0);
+    contain: layout paint;
+    backface-visibility: hidden;
+    transform: translate3d(0, 0, 0);
     opacity: 1;
     transition: opacity var(--reset-fade, 400ms) ease-out;
   }
@@ -203,43 +225,63 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
      Verovio's default `color="black"` presentation attribute. */
   .score-pan :global(svg .clef),
   .score-pan :global(svg .keySig),
-  .score-pan :global(svg .meterSig) {
+  .score-pan :global(svg .meterSig),
+  /* Inline tempo glyphs ("Tres doux", "Tempo I", etc.) — same fix as
+     the keysig/clef changes above: Verovio defaults them to black. */
+  .score-pan :global(svg .tempo),
+  /* Generic directives (text annotations like "espressivo", "rit.") —
+     Verovio renders these via `<g class="dir">`. */
+  .score-pan :global(svg .dir),
+  /* Articulations (staccato dots, accents, marcato) attached to notes. */
+  .score-pan :global(svg .artic),
+  /* Beam bars (the polygons that connect 8th/16th/32nd note stems)
+     and other phrasing engraving — Verovio paints these as filled
+     polygons / paths and inherits the dim ink color via currentColor. */
+  .score-pan :global(svg .beam),
+  .score-pan :global(svg .tuplet),
+  .score-pan :global(svg .slur),
+  .score-pan :global(svg .tie) {
     fill: currentColor;
     stroke: currentColor;
   }
+  /* Pedal markings (Ped. text + the bracket showing range of depression).
+     A dense piece like Ravel's Jeux d'eau has hundreds of these, and at
+     small stage heights the bracket reads as a foreign trapezoid below
+     the staves. Tinting + reduced opacity keeps them as a soft visual
+     hint of pedaling activity without competing with the notes. */
+  .score-pan :global(svg .pedal) {
+    fill: currentColor;
+    stroke: currentColor;
+    opacity: 0.45;
+  }
 
-  /* === Active-note / active-harm glow ===============================
+  /* === Active-note / active-harm flash ==============================
      score-player.ts adds `.is-active` to sounding notes + harms. The
-     color change lives in the keyframes (not a `transition: color`)
-     because Chrome won't interpolate between two inherited `var()`
-     values. Drop-shadow stack (tight + medium + wide) gives the 羽化
-     gradient from bright center to soft periphery. */
+     visual is a pure color flash — no filter, no animation. CSS
+     transition on `color` interpolates between the dim base and the
+     accent on class toggle.
+     Why so spartan: drop-shadow filter (even one layer) forces each
+     animating glyph onto its own compositor layer; with Ravel's
+     ~30 32nd notes/second, the layer churn caused intermittent
+     stutter that no amount of GPU hinting could eliminate. Plain
+     `color` transitions on inherited `currentColor` cost approximately
+     nothing per frame because the browser only repaints the few
+     elements whose color is actively interpolating. */
+  .score-pan :global(svg .note),
+  .score-pan :global(svg .harm) {
+    transition: color 600ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
   .score-pan :global(svg .note.is-active),
   .score-pan :global(svg .harm.is-active) {
-    animation: score-glow 1800ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    color: var(--accent);
+    transition: color 60ms ease-out;
   }
-  @keyframes score-glow {
-    /* Attack — brightest flash, widest halo */
-    0% {
-      color: var(--accent);
-      filter:
-        drop-shadow(0 0 2px color-mix(in srgb, var(--accent) 100%, transparent))
-        drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 90%, transparent))
-        drop-shadow(0 0 16px color-mix(in srgb, var(--accent) 60%, transparent))
-        drop-shadow(0 0 32px color-mix(in srgb, var(--accent) 30%, transparent));
-    }
-    /* Sustain — note still reads as lit, halo tightens */
-    45% {
-      color: var(--accent);
-      filter:
-        drop-shadow(0 0 2px color-mix(in srgb, var(--accent) 80%, transparent))
-        drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 45%, transparent))
-        drop-shadow(0 0 14px color-mix(in srgb, var(--accent) 20%, transparent));
-    }
-    /* Tail — color eases back toward the dim base, halo dissolves */
-    100% {
-      color: var(--fg-dim);
-      filter: drop-shadow(0 0 0 transparent);
+  @media (prefers-reduced-motion: reduce) {
+    .score-pan :global(svg .note),
+    .score-pan :global(svg .harm),
+    .score-pan :global(svg .note.is-active),
+    .score-pan :global(svg .harm.is-active) {
+      transition: none;
     }
   }
 
@@ -349,6 +391,30 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
   }
   .score.is-playing .score-playhead {
     background: var(--accent);
+  }
+
+  /* === Tempo overlay ================================================
+     Small mono-font label at top-left showing the active tempo marking.
+     Crossfade is driven by `.is-changing` — `setCurrent()` adds it,
+     swaps text mid-fade, then removes it. Only mounted when the piece
+     has more than one tempo (single-tempo scores skip the chrome). */
+  .score-stage :global(.score-tempo-overlay) {
+    position: absolute;
+    top: 4px;
+    left: 10px;
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--muted);
+    pointer-events: none;
+    white-space: nowrap;
+    opacity: 0.85;
+    transition: opacity 180ms ease;
+    z-index: 5;
+  }
+  .score-stage :global(.score-tempo-overlay.is-changing) {
+    opacity: 0;
   }
 
   /* === Hint ========================================================= */

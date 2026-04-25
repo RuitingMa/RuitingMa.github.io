@@ -1,0 +1,37 @@
+---
+title: 水之嬉戏（测试）
+date: "2026-04-26"
+kind: NOTE
+summary: Jeux d'eau 简化引文 + 完整 MusicXML 转写，验证乐谱组件全链路。
+draft: true
+---
+
+import Score from '../../components/Score.astro';
+
+## 一、手写 MEI 简化版（evocation）
+
+四个小节的简化引文，pitch 是 Ravel `Eadd9` 水波的色彩 evocation——不是原谱逐颗转写。**结构对照 Peters Urtext (Roger Nichols ed., 1994)**：拍号变化（4/4 → 4/4 → 2/4 → 4/4）、tempo 标记、pp 力度、32 分音符 + 显式 beam 都做到了。
+
+<Score slug="jeux-deau" />
+
+可以盯着左上角的 tempo overlay：playhead 走到第三小节那记 `<tempo>` 字形时，文字会从 `TRES DOUX` 淡出再淡入到 `UN PEU PLUS LENT`，第四小节再切回 `TEMPO I`（最后这两个是为了测试 overlay 而加的虚构速度变化，原作 m3 没有变速）。
+
+<Score slug="jeux-deau" loop />
+
+`loop` 模式下每次 wrap 回 t=0，overlay 也会跟着切回初始 tempo。
+
+---
+
+## 二、原谱完整 MusicXML（.mxl）
+
+下面这一份是从 MuseScore 社区下载的 Jeux d'eau **完整 MusicXML** 转写。文件丢进 `public/scores/jeux-deau-ravel/score.mxl`，不需要任何转换——Verovio 的 `loadZipDataBase64` 直接吞 PKZIP 容器，Score 组件的 fetcher 改了 5 行支持 `.mxl/.musicxml/.mei` 三种扩展。
+
+<Score slug="jeux-deau-ravel" height={420} />
+
+整首曲子全部小节，所有 32nd 音符、双手织体、pedal 标记、原谱 dynamic 与 tempo 全在。这就是「找到 MusicXML 后所需的工作」——0 行 MEI 手写。
+
+**注意双谱表的展示限制**：Score 组件最初是按单谱表设计的，渲染钢琴大谱表（treble + bass）会有视觉不完美：
+
+- Stage 高度需要明显加大（这里传了 `height={420}`，原默认 200px 装不下）
+- Frozen overlay 现在仍只显示 treble clef + 调号 + 拍号，bass clef 还没纳入
+- 多谱表的 mid-piece tempo overlay 因 MusicXML→MEI 转换的 `<tempo>` 出现位置（多个/staff/lang 分布），目前我们的 extractor 只接 hand-written 形态——overlay 暂不出现，但 SVG 内的 tempo 字形和音频节奏都对
