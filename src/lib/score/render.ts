@@ -1910,12 +1910,18 @@ export function setupRenderLoop(args: {
           lastIterSeen = iter;
         }
         translateX = playheadPx - containerX + wrapOffset;
-        // Keep translate in (-musicWidth, 0]. The phantom leader tile
-        // positioned at `-musicWidth` means either side of that range
-        // has identical content to what the wrap reveals — the snap
-        // is visually seamless.
+        // Normalize translate into (-musicWidth, 0] via a phantom leader
+        // tile at `-musicWidth` so the seam is visually seamless. The
+        // forward wrap (`<= -musicWidth`) handles natural playback drift.
+        // The downward wrap (`> 0`) only matters when wrapOffset has
+        // accumulated state from prior iterations / backward jumps —
+        // skipping it when wrapOffset is zero preserves the legitimate
+        // fresh-start pose where translateX is a small positive value
+        // (first note's natural x sits slightly left of the playhead).
         while (translateX <= -musicWidth) { translateX += musicWidth; wrapOffset += musicWidth; }
-        while (translateX > 0) { translateX -= musicWidth; wrapOffset -= musicWidth; }
+        if (wrapOffset !== 0) {
+          while (translateX > 0) { translateX -= musicWidth; wrapOffset -= musicWidth; }
+        }
       } else {
         translateX = playheadPx - xAtMs(ms);
       }

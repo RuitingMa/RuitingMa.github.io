@@ -137,7 +137,15 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
   // measure-1 header in the pan's own coordinates — drives loop
   // copy-shifting so music tiles end-to-end across loop copies.
   const actualHeaderWidth = measureHeaderWidth(firstMeasure, panRect0);
-  const musicWidth = panRect0.width - actualHeaderWidth;
+  // Music width = ONE iteration's width. For non-loop that's the whole
+  // pan (single SVG OR all tiles laid out left-to-right summing to the
+  // full piece). For loop it's just one copy — pan spans N copies so
+  // panRect.width would be N× too large, breaking padAnchors's loop-
+  // tail anchor and the render loop's wrap math.
+  const oneIterationWidthPx = loop
+    ? tile0.getBoundingClientRect().width
+    : panRect0.width;
+  const musicWidth = oneIterationWidthPx - actualHeaderWidth;
 
   const anchors = padAnchors(
     buildAnchors(pan, rendered, panRect0),
