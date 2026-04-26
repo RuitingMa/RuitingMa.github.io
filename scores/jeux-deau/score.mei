@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mei xmlns="http://www.music-encoding.org/ns/mei" meiversion="5.0">
+  <meiHead>
+    <fileDesc>
+      <titleStmt><title>Jeux d'eau (opening, evocation)</title></titleStmt>
+      <pubStmt/>
+    </fileDesc>
+  </meiHead>
+  <music>
+    <body>
+      <mdiv>
+        <score>
+          <scoreDef meter.count="4" meter.unit="4" key.sig="4s" midi.bpm="72">
+            <staffGrp>
+              <staffDef n="1" lines="5" clef.shape="G" clef.line="2"/>
+            </staffGrp>
+          </scoreDef>
+          <section>
+            <!-- Bar 1 (4/4): "Tres doux" pp. 4 beat-groups of 32nds.
+                 STRUCTURALLY faithful to Ravel's m1 (Peters Urtext,
+                 ed. Roger Nichols 1994): tempo (♪=144 → quarter=72),
+                 key (E major), meter (4/4), dynamic (pp), 32nd-note
+                 rhythm, beat-grouped beams. PITCHES are an evocation
+                 of the Eadd9 wave palette — the scan resolution
+                 doesn't allow single-notehead transcription. -->
+            <measure n="1">
+              <tempo place="above" tstamp="1" midi.bpm="72">Tres doux</tempo>
+              <dynam place="below" staff="1" tstamp="1">pp</dynam>
+              <staff n="1"><layer n="1">
+                <beam>
+                  <note pname="b" oct="4" dur="32"/>
+                  <note pname="d" oct="5" dur="32"/>
+                  <note pname="f" oct="5" dur="32"/>
+                  <note pname="b" oct="5" dur="32"/>
+                  <note pname="f" oct="5" dur="32"/>
+                  <note pname="d" oct="5" dur="32"/>
+                  <note pname="b" oct="4" dur="32"/>
+                  <note pname="d" oct="5" dur="32"/>
+                </beam>
+                <beam>
+                  <note pname="b" oct="4" dur="32"/>
+                  <note pname="d" oct="5" dur="32"/>
+                  <note pname="f" oct="5" dur="32"/>
+                  <note pname="b" oct="5" dur="32"/>
+                  <note pname="g" oct="5" dur="32"/>
+                  <note pname="f" oct="5" dur="32"/>
+                  <note pname="d" oct="5" dur="32"/>
+                  <note pname="f" oct="5" dur="32"/>
+                </beam>
+                <beam>
+                  <note pname="b" oct="4" dur="32"/>
+                  <note pname="d" oct="5" dur="32"/>
+                  <note pname="e" oct="5" dur="32"/>
+                  <note pname="b" oct="5" dur="32"/>
+                  <note pname="g" oct="5" dur="32"/>
+                  <note pname="e" oct="5" dur="32"/>
+                  <note pname="d" oct="5" dur="32"/>
+                  <note pname="b" oct="4" dur="32"/>
+                </beam>
+                <beam>
+                  <note pname="g" oct="4" dur="32"/>
+                  <note pname="b" oct="4" dur="32"/>
+                  <note pname="d" oct="5" dur="32"/>
+                  <note pname="b" oct="5" dur="32"/>
+                  <note pname="d" oct="5" dur="32"/>
+                  <note pname="b" oct="4" dur="32"/>
+                  <note pname="g" oct="4" dur="32"/>
+                  <note pname="b" oct="4" dur="32"/>
+                </beam>
+              </layer></staff>
+              <harm place="below" staff="1" tstamp="1" n="2">Eadd9</harm>
+            </measure>
+
+            <!-- Bar 2 (4/4): pattern climbs, peaks reach the upper octave. -->
+            <measure n="2">
+              <staff n="1"><layer n="1">
+                <beam>
+                  <note pname="d" oct="5" dur="32"/>
+                  <note pname="f" oct="5" dur="32"/>
+                  <note pname="b" oct="5" dur="32"/>
+                  <note pname="d" oct="6" dur="32"/>
+                  <note pname="b" oct="5" dur="32"/>
+                  <note pname="f" oct="5" dur="32"/>
+                  <note pname="d" oct="5" dur="32"/>
+                  <note pname="f" oct="5" dur="32"/>
+                </beam>
+                <beam>
+                  <note pname="d" oct="5" dur="32"/>
+                  <note pname="f" oct="5" dur="32"/>
+                  <note pname="b" oct="5" dur="32"/>
+                  <note pname="d" oct="6" dur="32"/>
+                  <note pname="g" oct="6" dur="32"/>
+                  <note pname="d" oct="6" dur="32"/>
+                  <note pname="b" oct="5" dur="32"/>
+                  <note pname="f" oct="5" dur="32"/>
+                </beam>
+                <beam>
+                  <note pname="d" oct="5" dur="32"/>
+                  <note pname="e" oct="5" dur="32"/>
+                  <note pname="b" oct="5" dur="32"/>
+                  <note pname="d" oct="6" dur="32"/>
+                  <note pname="g" oct="6" dur="32"/>
+                  <note pname="d" oct="6" dur="32"/>
+                  <note pname="b" oct="5" dur="32"/>
+                  <note pname="e" oct="5" dur="32"/>
+                </beam>
+                <beam>
+                  <note pname="b" oct="4" dur="32"/>
+                  <note pname="d" oct="5" dur="32"/>
+                  <note pname="f" oct="5" dur="32"/>
+                  <note pname="b" oct="5" dur="32"/>
+                  <note pname="f" oct="5" dur="32"/>
+                  <note pname="d" oct="5" dur="32"/>
+                  <note pname="b" oct="4" dur="32"/>
+                  <note pname="c" oct="5" dur="32"/>
+                </beam>
+              </layer></staff>
+              <harm place="below" staff="1" tstamp="1" n="2">Eadd9</harm>
+            </measure>
+
+            <!-- Meter change to 2/4 — matches Ravel's actual m3 in
+                 the Peters Urtext (a single 2/4 bar appears here).
+                 The fictional tempo pull-back ("Un peu plus lent")
+                 is OUR addition to exercise the tempo-overlay UI;
+                 the original holds Tempo I throughout. -->
+            <scoreDef meter.count="2" meter.unit="4"/>
+            <measure n="3">
+              <tempo place="above" tstamp="1" midi.bpm="54">Un peu plus lent</tempo>
+              <staff n="1"><layer n="1">
+                <beam>
+                  <note pname="c" oct="5" dur="32"/>
+                  <note pname="e" oct="5" dur="32"/>
+                  <note pname="g" oct="5" dur="32"/>
+                  <note pname="c" oct="6" dur="32"/>
+                  <note pname="g" oct="5" dur="32"/>
+                  <note pname="e" oct="5" dur="32"/>
+                  <note pname="c" oct="5" dur="32"/>
+                  <note pname="e" oct="5" dur="32"/>
+                </beam>
+                <beam>
+                  <note pname="c" oct="5" dur="32"/>
+                  <note pname="e" oct="5" dur="32"/>
+                  <note pname="g" oct="5" dur="32"/>
+                  <note pname="c" oct="6" dur="32"/>
+                  <note pname="d" oct="6" dur="32"/>
+                  <note pname="c" oct="6" dur="32"/>
+                  <note pname="g" oct="5" dur="32"/>
+                  <note pname="e" oct="5" dur="32"/>
+                </beam>
+              </layer></staff>
+              <harm place="below" staff="1" tstamp="1" n="2">C#m9</harm>
+            </measure>
+
+            <!-- Meter back to 4/4. Tempo I. Whole note E settles the wave. -->
+            <scoreDef meter.count="4" meter.unit="4"/>
+            <measure n="4">
+              <tempo place="above" tstamp="1" midi.bpm="72">Tempo I</tempo>
+              <staff n="1"><layer n="1">
+                <note pname="e" oct="5" dur="1"/>
+              </layer></staff>
+              <harm place="below" staff="1" tstamp="1" n="2">E</harm>
+            </measure>
+          </section>
+        </score>
+      </mdiv>
+    </body>
+  </music>
+</mei>
