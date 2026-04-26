@@ -892,13 +892,161 @@ export function injectCopies(pan: HTMLElement, svg: string, copies: number): SVG
   return Array.from(pan.querySelectorAll<SVGSVGElement>(':scope > svg'));
 }
 
-/** Compute anchors (time → x) from note onsets in the SVG. We measure via
- *  getBoundingClientRect because Verovio's nested transforms make getBBox
- *  unreliable, and we want stage-relative pixel values for the render loop. */
+/**
+ * Slice a wide pan SVG into multiple smaller `<svg>` tiles laid out
+ * left-to-right when its displayed width exceeds `tileMaxPx`.
+ *
+ * Why: Ravel-class scores render as one ~37k-px-wide system. Multiplied
+ * by devicePixelRatio that exceeds every reasonable GPU's max texture
+ * dimension (Intel iGPUs: 8192; modern discrete: 16384), so the layer
+ * can't be promoted in one go and the browser CPU-rasterizes the entire
+ * pan on every transform change — playback drops to ~10 fps. Splitting
+ * into ≤ tileMaxPx chunks restores per-tile GPU promotion.
+ *
+ * How: each tile is a fresh `<svg>` whose viewBox crops the source's
+ * outer-coord space to that tile's slice. Inside, a re-built
+ * `svg.definition-scale` keeps the SOURCE'S full inner viewBox but is
+ * explicitly positioned at the source's outer dimensions — that way
+ * Verovio's internal-coord transforms on each note/beam/staff resolve
+ * to the same outer-coord positions as the source, and the outer
+ * viewBox crop selects which of those land inside the tile's display.
+ *
+ * Measures are MOVED out of the source (not cloned) so the total DOM
+ * node count stays roughly equal to the source's. `<defs>` are cloned
+ * per tile (small — ~50 SMuFL symbols).
+ *
+ * The first tile keeps the system-level chrome (system bar, brace /
+ * bracket); later tiles drop those since they only render at the
+ * system's left edge.
+ *
+ * If the source fits within `tileMaxPx`, returns `[srcSvg]` unchanged.
+ *
+ * NOTE: cross-measure spans (slurs / ties / hairpins) that happen to
+ * straddle a tile boundary will be visually clipped on whichever tile
+ * doesn't carry the span's parent measure. With a 4096-px tile size
+ * and typical slur durations (< 1 s ≈ 300 px at Ravel scroll rate),
+ * this is rare in practice; we accept it for now.
+ */
+export function sliceSvgIntoTiles(
+  pan: HTMLElement,
+  srcSvg: SVGSVGElement,
+  tileMaxPx: number,
+): SVGSVGElement[] {
+  const srcRect = srcSvg.getBoundingClientRect();
+  if (srcRect.width <= tileMaxPx) return [srcSvg];
+
+  const srcOuterVB = srcSvg.viewBox.baseVal;
+  if (!srcOuterVB || srcOuterVB.width === 0) return [srcSvg];
+
+  const defScale = srcSvg.querySelector('svg.definition-scale') as SVGSVGElement | null;
+  const pageMargin = defScale?.querySelector('.page-margin') as Element | null;
+  const system = pageMargin?.querySelector('.system') as Element | null;
+  if (!defScale || !pageMargin || !system) return [srcSvg];
+
+  const measures = Array.from(system.querySelectorAll(':scope > .measure'));
+  if (measures.length === 0) return [srcSvg];
+
+  const srcDefScaleVB = defScale.getAttribute('viewBox') ?? '';
+  if (!srcDefScaleVB) return [srcSvg];
+
+  // System-level chrome (bare paths for system bar, .grpSym for brace/
+  // bracket). These render at the left edge of the system, so we keep
+  // them only on the first tile.
+  const systemChromeChildren: Element[] = [];
+  for (const child of Array.from(system.children)) {
+    if (!child.classList?.contains('measure')) {
+      systemChromeChildren.push(child);
+    }
+  }
+
+  // Conversion: 1 displayed pixel = N outer-user-units
+  const userPerPx = srcOuterVB.width / srcRect.width;
+
+  // Group measures into tiles by accumulated displayed width.
+  type Group = { measures: Element[]; xLeftDisp: number; xRightDisp: number };
+  const groups: Group[] = [];
+  let cur: Group | null = null;
+  for (const m of measures) {
+    const r = m.getBoundingClientRect();
+    const xL = r.left - srcRect.left;
+    const xR = r.right - srcRect.left;
+    if (!cur) cur = { measures: [], xLeftDisp: xL, xRightDisp: xR };
+    if (cur.measures.length > 0 && (xR - cur.xLeftDisp) > tileMaxPx) {
+      groups.push(cur);
+      cur = { measures: [], xLeftDisp: xL, xRightDisp: xR };
+    }
+    cur.measures.push(m);
+    cur.xRightDisp = xR;
+  }
+  if (cur && cur.measures.length > 0) groups.push(cur);
+  if (groups.length <= 1) return [srcSvg];
+
+  const defs = srcSvg.querySelector('defs');
+  const NS = 'http://www.w3.org/2000/svg';
+  const tiles: SVGSVGElement[] = [];
+
+  for (let gi = 0; gi < groups.length; gi++) {
+    const g = groups[gi];
+    const isLast = gi === groups.length - 1;
+    const xSliceUser = g.xLeftDisp * userPerPx + srcOuterVB.x;
+    // Last tile extends to source's outer-right so any trailing barline
+    // / system-end mark isn't lost.
+    const wSliceUser = isLast
+      ? (srcOuterVB.x + srcOuterVB.width) - xSliceUser
+      : (g.xRightDisp - g.xLeftDisp) * userPerPx;
+
+    const tile = document.createElementNS(NS, 'svg') as SVGSVGElement;
+    tile.setAttribute(
+      'viewBox',
+      `${xSliceUser} ${srcOuterVB.y} ${wSliceUser} ${srcOuterVB.height}`,
+    );
+    tile.setAttribute('preserveAspectRatio', 'xMinYMid meet');
+    (tile as unknown as HTMLElement).style.display = 'block';
+
+    if (defs) tile.appendChild(defs.cloneNode(true));
+
+    // Inner defScale: same internal viewBox as source, sized + placed
+    // to span source's full outer area in user coords. The tile's
+    // outer viewBox then crops display to just this slice.
+    const defScaleClone = defScale.cloneNode(false) as SVGSVGElement;
+    defScaleClone.setAttribute('x', String(srcOuterVB.x));
+    defScaleClone.setAttribute('y', String(srcOuterVB.y));
+    defScaleClone.setAttribute('width', String(srcOuterVB.width));
+    defScaleClone.setAttribute('height', String(srcOuterVB.height));
+
+    const pmClone = pageMargin.cloneNode(false) as Element;
+    const sysClone = system.cloneNode(false) as Element;
+
+    if (gi === 0) {
+      for (const c of systemChromeChildren) sysClone.appendChild(c.cloneNode(true));
+    }
+    for (const m of g.measures) sysClone.appendChild(m);
+
+    pmClone.appendChild(sysClone);
+    defScaleClone.appendChild(pmClone);
+    tile.appendChild(defScaleClone);
+    tiles.push(tile);
+  }
+
+  // Replace srcSvg in pan with the tile sequence
+  const next = srcSvg.nextSibling;
+  pan.removeChild(srcSvg);
+  for (const t of tiles) {
+    if (next) pan.insertBefore(t, next);
+    else pan.appendChild(t);
+  }
+  return tiles;
+}
+
+/** Compute anchors (time → x) from note onsets across the pan. We
+ *  measure via getBoundingClientRect because Verovio's nested transforms
+ *  make getBBox unreliable, and we want pan-relative pixel values for
+ *  the render loop. Walks the entire pan so it works whether the SVG
+ *  is unsliced (single child) or sliced into tiles (N children). */
 export function buildAnchors(
-  svgEl: SVGSVGElement,
+  pan: HTMLElement,
   rendered: Rendered,
-  svgRect0: DOMRect,
+  panRect0: DOMRect,
 ): Anchor[] {
   const byStart = new Map<number, string[]>();
   for (const n of rendered.notes) {
@@ -911,11 +1059,11 @@ export function buildAnchors(
     const ids = byStart.get(t)!;
     let xSum = 0, count = 0;
     for (const id of ids) {
-      const el = svgEl.querySelector(`#${CSS.escape(id)}`);
+      const el = pan.querySelector(`#${CSS.escape(id)}`);
       if (!el) continue;
       const rect = (el as Element).getBoundingClientRect();
       if (rect.width === 0 && rect.height === 0) continue;
-      xSum += (rect.left + rect.width / 2) - svgRect0.left;
+      xSum += (rect.left + rect.width / 2) - panRect0.left;
       count++;
     }
     if (count > 0) anchors.push({ t, x: xSum / count });
@@ -923,7 +1071,7 @@ export function buildAnchors(
   if (anchors.length === 0) {
     // Fallback: span full width linearly.
     anchors.push({ t: 0, x: 0 });
-    anchors.push({ t: rendered.totalMs, x: svgRect0.width });
+    anchors.push({ t: rendered.totalMs, x: panRect0.width });
   }
   return anchors;
 }
@@ -954,8 +1102,8 @@ export function padAnchors(
   rendered: Rendered,
   loop: boolean,
   musicWidth: number,
-  svgEl: SVGSVGElement,
-  svgRect0: DOMRect,
+  pan: HTMLElement,
+  panRect0: DOMRect,
 ): Anchor[] {
   if (anchors[0].t > 0) {
     anchors.unshift({ t: 0, x: anchors[0].x });
@@ -971,13 +1119,13 @@ export function padAnchors(
       }
       let xEnd = last.x;
       if (lastNote) {
-        const el = svgEl.querySelector(`#${CSS.escape(lastNote.id)}`);
+        const el = pan.querySelector(`#${CSS.escape(lastNote.id)}`);
         if (el) {
           const rect = (el as Element).getBoundingClientRect();
-          xEnd = (rect.left + rect.width) - svgRect0.left;
+          xEnd = (rect.left + rect.width) - panRect0.left;
         }
       }
-      xEnd = Math.min(xEnd, svgRect0.width);
+      xEnd = Math.min(xEnd, panRect0.width);
       anchors.push({ t: rendered.totalMs, x: xEnd });
       // Tail anchor: the last note should keep drifting left at the
       // same rate until it's off the stage. Extend by TAIL_MS of silent
@@ -1144,18 +1292,23 @@ export interface PannedShellsResult {
  * naturals are visible in pan as the change measure scrolls past, and
  * don't belong in the static chrome.
  *
- * panSvg must still have its measure-1 chrome intact — call this
- * BEFORE `stripHeadersFrom`.
+ * The first tile (or the unsliced single SVG) must still have its
+ * measure-1 chrome intact — call this BEFORE `stripHeadersFrom`. For
+ * sliced layouts, mid-piece source measures live in later tiles, so
+ * `pan` is walked for the full `.measure` set; the shell template +
+ * defs come from `tile0`.
  */
 export function buildPannedShells(
-  panSvg: SVGSVGElement,
+  pan: HTMLElement,
+  tile0: SVGSVGElement,
   events: ReadonlyArray<HeaderEvent>,
-  svgRect: DOMRect,
+  panRect: DOMRect,
 ): PannedShellsResult {
   const shells = new Map<string, SVGSVGElement>();
   let maxChromeRight = 0;
   if (events.length === 0) return { shells, maxChromeRight };
-  const measures = panSvg.querySelectorAll('.measure');
+  // Walk pan to capture measures across tiles in document order.
+  const measures = pan.querySelectorAll('.measure');
   const m1 = measures[0];
   if (!m1) return { shells, maxChromeRight };
 
@@ -1164,12 +1317,14 @@ export function buildPannedShells(
   // every chrome glyph's `<use transform="translate(...)">` is in THIS
   // internal coord space, not the outer one. To shift a swapped glyph by
   // a measured display-px delta, we convert via the def-scale viewBox →
-  // pan display ratio (def_scale_units_per_display_px).
-  const defScale = panSvg.querySelector('svg.definition-scale') as SVGSVGElement | null;
-  if (!defScale || svgRect.width <= 0) return { shells, maxChromeRight };
+  // pan display ratio (def_scale_units_per_display_px). Tile 0's
+  // defScale carries the same viewBox as the source so this ratio is
+  // identical whether we sliced or not.
+  const defScale = tile0.querySelector('svg.definition-scale') as SVGSVGElement | null;
+  if (!defScale || panRect.width <= 0) return { shells, maxChromeRight };
   const defVB = defScale.viewBox.baseVal;
   if (defVB.width <= 0 || defVB.height <= 0) return { shells, maxChromeRight };
-  const defScalePerPxX = defVB.width / svgRect.width;
+  const defScalePerPxX = defVB.width / panRect.width;
 
   const m1Staves = Array.from(m1.querySelectorAll('.staff'));
 
@@ -1235,7 +1390,7 @@ export function buildPannedShells(
     if (seen.has(fp)) continue;
     seen.add(fp);
 
-    const shell = cloneMeasureShell(panSvg, 0);
+    const shell = cloneMeasureShell(tile0, 0);
     if (!shell) continue;
 
     const shellStaves = Array.from(shell.querySelectorAll('.staff'));
@@ -1257,7 +1412,7 @@ export function buildPannedShells(
       // reflow keysig+meter to accommodate width deltas — the small
       // fudge is invisible in practice.
       const m1ClefRect = m1ClefEl.getBoundingClientRect();
-      let clefRightSvg = m1ClefRect.right - svgRect.left;
+      let clefRightSvg = m1ClefRect.right - panRect.left;
       if (clefSourceMi !== 0) {
         const sourceClefEl = measures[clefSourceMi]?.querySelectorAll('.staff')[i]?.querySelector('.clef');
         const sourceClefRect = sourceClefEl?.getBoundingClientRect();
@@ -1267,7 +1422,7 @@ export function buildPannedShells(
           prependTranslate(newClef, dxDisplay * defScalePerPxX);
           shellClefEl.parentNode.replaceChild(newClef, shellClefEl);
           // Recompute right edge using source clef's width post-shift.
-          clefRightSvg = (m1ClefRect.left - svgRect.left) + sourceClefRect.width;
+          clefRightSvg = (m1ClefRect.left - panRect.left) + sourceClefRect.width;
         }
       }
 
@@ -1294,7 +1449,7 @@ export function buildPannedShells(
             if (href.includes('E261')) acc.remove();
           }
           const targetLeftSvg = clefRightSvg + padDisplay;
-          const dxDisplay = targetLeftSvg - (sourceKsRect.left - svgRect.left);
+          const dxDisplay = targetLeftSvg - (sourceKsRect.left - panRect.left);
           prependTranslate(newKs, dxDisplay * defScalePerPxX);
           if (shellKsEl?.parentNode) {
             shellKsEl.parentNode.replaceChild(newKs, shellKsEl);
@@ -1321,7 +1476,7 @@ export function buildPannedShells(
         const m1MeterRect = m1MeterEl.getBoundingClientRect();
         let activeMeterEl: Element = shellMeterEl;
         let activeMeterWidth = m1MeterRect.width;
-        let activeMeterNaturalLeftSvg = m1MeterRect.left - svgRect.left;
+        let activeMeterNaturalLeftSvg = m1MeterRect.left - panRect.left;
         if (meterSourceMi !== 0) {
           const sourceMeterEl = measures[meterSourceMi]?.querySelectorAll('.staff')[i]?.querySelector('.meterSig');
           const sourceMeterRect = sourceMeterEl?.getBoundingClientRect();
@@ -1330,7 +1485,7 @@ export function buildPannedShells(
             shellMeterEl.parentNode.replaceChild(newMeter, shellMeterEl);
             activeMeterEl = newMeter;
             activeMeterWidth = sourceMeterRect.width;
-            activeMeterNaturalLeftSvg = sourceMeterRect.left - svgRect.left;
+            activeMeterNaturalLeftSvg = sourceMeterRect.left - panRect.left;
           }
         }
         const targetMeterLeftSvg = keysigRightSvg + (e.keysig === '0' ? padDisplay : padDisplay);
