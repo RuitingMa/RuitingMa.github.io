@@ -24,7 +24,6 @@ export class ScorePlayer {
   private synth: Synth | null = null;
   private rendered: Rendered;
   private loop: boolean;
-  private preRollMs: number;
   private tailMs: number;
   private playing = false;
   // AudioContext time that corresponds to score-time 0 of the current
@@ -32,13 +31,6 @@ export class ScorePlayer {
   private iterStart = 0;
   // ms within the current iteration — set on pause so resume is seamless.
   private pausedAt = 0;
-  // True in the "never played yet, or freshly reset to start" state.
-  // When this is true AND pausedAt === 0, currentMs() reports -preRollMs
-  // so the rest frame before first play already shows the score shifted
-  // right by the lead-in distance. Clicking play then scrolls smoothly
-  // from that pose with no visible jump. Any play() / seek() that
-  // actually moves the position flips it false.
-  private atFreshStart = true;
   // Absolute ms through which notes are already scheduled. Drives the
   // lookahead scheduler (we only add notes past this point).
   private scheduledUpTo = 0;
@@ -54,10 +46,9 @@ export class ScorePlayer {
 
   onEnd: (() => void) | null = null;
 
-  constructor(rendered: Rendered, loop: boolean, preRollMs = 0, tailMs = 0) {
+  constructor(rendered: Rendered, loop: boolean, tailMs = 0) {
     this.rendered = rendered;
     this.loop = loop;
-    this.preRollMs = preRollMs;
     // Loop scores don't tail — they wrap cleanly at totalMs. Only the
     // non-loop flavor has a "last note walks off" silence at the end.
     this.tailMs = loop ? 0 : tailMs;
@@ -87,15 +78,9 @@ export class ScorePlayer {
     this.ensureAudio();
     const ctx = this.ctx!;
     await ctx.resume();
-    // Apply pre-roll only on a fresh start — either never played yet,
-    // or just reset-to-start. Resuming from a paused mid-piece position
-    // (or from a drag-seek to some arbitrary ms) shouldn't add a
-    // lead-in.
-    const preRollSec = this.atFreshStart ? this.preRollMs / 1000 : 0;
-    this.iterStart = ctx.currentTime + preRollSec - this.pausedAt / 1000;
+    this.iterStart = ctx.currentTime - this.pausedAt / 1000;
     this.scheduledUpTo = this.pausedAt;
     this.playing = true;
-    this.atFreshStart = false;
     activePlayers.add(this);
     this.tick();
     this.schedulerTimer = setInterval(() => this.tick(), ScorePlayer.SCHED_INTERVAL_MS);
@@ -118,10 +103,7 @@ export class ScorePlayer {
 
   /** ms position to use for visuals. Cheap — called from rAF. */
   currentMs(): number {
-    if (!this.playing || !this.ctx) {
-      if (this.atFreshStart) return -this.preRollMs;
-      return this.pausedAt;
-    }
+    if (!this.playing || !this.ctx) return this.pausedAt;
     const raw = (this.ctx.currentTime - this.iterStart) * 1000;
     if (this.loop) return raw % this.rendered.totalMs;
     return Math.min(raw, this.visualTotalMs);
@@ -146,9 +128,9 @@ export class ScorePlayer {
 
   /** Jump to a specific ms without auto-playing. Clamps non-loop to
    *  [0, totalMs]; wraps loop into [0, totalMs). Pauses first if playing
-   *  so synth stops cleanly before the position shift. Any seek exits
-   *  fresh-start (even a seek to exactly 0 — the intent is that the
-   *  reader wants to LOOK AT t=0, not the lead-in pose). */
+   *  so synth stops cleanly before the position shift. Non-loop drag
+   *  past t=0 lands here as a seek to a negative ms and gets clamped to
+   *  0 — that's the visible "bounce back to start" behavior. */
   seek(ms: number) {
     if (this.playing) this.pause();
     if (this.loop) {
@@ -157,16 +139,7 @@ export class ScorePlayer {
     } else {
       this.pausedAt = Math.max(0, Math.min(this.visualTotalMs, ms));
     }
-    this.atFreshStart = false;
     this.scheduleCursor = 0;
-  }
-
-  /** Reset to t=0 without playing. Complements isAtEnd(). Re-enters the
-   *  fresh-start pose so the next play() gets its pre-roll back. */
-  resetToStart() {
-    if (this.playing) this.pause();
-    this.pausedAt = 0;
-    this.atFreshStart = true;
   }
 
   destroy() {

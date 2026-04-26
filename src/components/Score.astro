@@ -213,86 +213,47 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
     height: 100%;
     width: auto;
     color: var(--fg-dim);
-  }
-  .score-pan :global(svg .note),
-  .score-pan :global(svg .rest),
-  .score-pan :global(svg .stem),
-  .score-pan :global(svg .barLine),
-  .score-pan :global(svg .harm),
-  .score-pan :global(svg .dynam),
-  /* Mid-piece key-signature changes stay in the pan so readers see them
-     scroll past the playhead. Without these rules their glyphs keep
-     Verovio's default `color="black"` presentation attribute. */
-  .score-pan :global(svg .clef),
-  .score-pan :global(svg .keySig),
-  .score-pan :global(svg .meterSig),
-  /* Inline tempo glyphs ("Tres doux", "Tempo I", etc.) — same fix as
-     the keysig/clef changes above: Verovio defaults them to black. */
-  .score-pan :global(svg .tempo),
-  /* Generic directives (text annotations like "espressivo", "rit.") —
-     Verovio renders these via `<g class="dir">`. */
-  .score-pan :global(svg .dir),
-  /* Articulations (staccato dots, accents, marcato) attached to notes. */
-  .score-pan :global(svg .artic),
-  /* Beam bars (the polygons that connect 8th/16th/32nd note stems)
-     and other phrasing engraving — Verovio paints these as filled
-     polygons / paths and inherits the dim ink color via currentColor. */
-  .score-pan :global(svg .beam),
-  .score-pan :global(svg .tuplet),
-  .score-pan :global(svg .slur),
-  .score-pan :global(svg .tie) {
+    /* `fill` and `stroke` are inheritable in SVG, so setting them on the
+       root cascades to every descendant that doesn't override. Combined
+       with render.ts's string-level rewrite of literal `fill="black"` /
+       `stroke="black"` to `currentColor`, this single rule covers every
+       glyph Verovio emits — noteheads, beams, ties, AND the long tail
+       of less common ones (arpeggios, octave brackets, cross-staff
+       group bars, ornaments) — without per-class enumeration. */
     fill: currentColor;
     stroke: currentColor;
   }
   /* Pedal markings (Ped. text + the bracket showing range of depression).
      A dense piece like Ravel's Jeux d'eau has hundreds of these, and at
      small stage heights the bracket reads as a foreign trapezoid below
-     the staves. Tinting + reduced opacity keeps them as a soft visual
-     hint of pedaling activity without competing with the notes. */
+     the staves. Reduced opacity keeps them as a soft visual hint of
+     pedaling activity without competing with the notes. */
   .score-pan :global(svg .pedal) {
-    fill: currentColor;
-    stroke: currentColor;
     opacity: 0.45;
   }
 
   /* === Active-note / active-harm flash ==============================
-     score-player.ts adds `.is-active` to sounding notes + harms. The
-     visual is a pure color flash — no filter, no animation. CSS
-     transition on `color` interpolates between the dim base and the
-     accent on class toggle.
-     Why so spartan: drop-shadow filter (even one layer) forces each
-     animating glyph onto its own compositor layer; with Ravel's
-     ~30 32nd notes/second, the layer churn caused intermittent
-     stutter that no amount of GPU hinting could eliminate. Plain
-     `color` transitions on inherited `currentColor` cost approximately
-     nothing per frame because the browser only repaints the few
-     elements whose color is actively interpolating. */
-  .score-pan :global(svg .note),
-  .score-pan :global(svg .harm) {
-    transition: color 600ms cubic-bezier(0.22, 1, 0.36, 1);
-  }
+     score-player.ts adds `.is-active` to sounding notes + harms.
+     Activation has a 60ms fade-in to the accent color; deactivation
+     SNAPS instantly back to dim — no fade-out.
+     Why no fade-out: `color` is not a compositor-friendly property,
+     so each ms of an in-flight transition forces a paint of the note's
+     subtree. On dense pieces (Ravel ~30 32nd-notes/sec), a 600ms
+     fade-out leaves ~18 notes interpolating concurrently at any
+     moment; combined with the wide pan SVG (~37k px) and per-frame
+     translate3d, the browser ended up CPU-rasterizing nearly the whole
+     stage on every frame, dropping playback to ~15 fps. Snap-off
+     keeps the active set ≤ 1–2 mid-fade glyphs at any moment, so
+     paint cost stays bounded regardless of polyphony. */
   .score-pan :global(svg .note.is-active),
   .score-pan :global(svg .harm.is-active) {
     color: var(--accent);
     transition: color 60ms ease-out;
   }
   @media (prefers-reduced-motion: reduce) {
-    .score-pan :global(svg .note),
-    .score-pan :global(svg .harm),
     .score-pan :global(svg .note.is-active),
     .score-pan :global(svg .harm.is-active) {
       transition: none;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .score-pan :global(svg .note.is-active),
-    .score-pan :global(svg .harm.is-active) {
-      animation: none;
-      filter: none;
-      /* Still tint so readers who opt out of motion can see
-         which note is sounding — just without the halo pulse. */
-      color: var(--accent);
     }
   }
 
@@ -333,8 +294,8 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
     height: 100%;
     width: auto;
     color: var(--fg-dim);
-  }
-  .score-stage :global(.score-frozen-shell svg *) {
+    /* Same inheritance trick as the pan SVG above: one root rule covers
+       every glyph in the cloned shell, no class enumeration needed. */
     fill: currentColor;
     stroke: currentColor;
   }

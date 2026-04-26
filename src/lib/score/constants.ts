@@ -28,10 +28,6 @@ export const K = {
    *  header-derived minimum yields something larger. Rarely hit — most
    *  scores are bound by the stable header minimum. */
   DEFAULT_PLAYHEAD_FRAC: 0.35,
-  /** Lead-in before playback: the first note starts to the right of the
-   *  playhead and scrolls toward it at normal scroll rate, hitting the
-   *  playhead exactly when audio begins. 0 = no pre-roll. */
-  PRE_ROLL_MS: 1200,
   /** Duration of the fade-out / fade-in when the user clicks on a
    *  finished non-loop score (rewinds to start). */
   RESET_FADE_MS: 400,

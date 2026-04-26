@@ -947,8 +947,8 @@ export function measureHeaderWidth(firstMeasure: Element | null, svgRect0: DOMRe
   return width;
 }
 
-/** Pad the anchor list to cover [-PRE_ROLL_MS, totalMs]. See inline
- *  comments for the different endpoints non-loop vs loop use. */
+/** Pad the anchor list to cover [0, totalMs] (non-loop adds a tail
+ *  beyond totalMs so the last note can scroll past the playhead). */
 export function padAnchors(
   anchors: Anchor[],
   rendered: Rendered,
@@ -991,20 +991,6 @@ export function padAnchors(
         });
       }
     }
-  }
-
-  // Pre-roll: prepend an anchor at t=-PRE_ROLL_MS so that on first play,
-  // the first note begins RIGHT of the playhead and scrolls toward it
-  // at the same rate as normal playback. Computing the lead-in distance
-  // from the overall piece's scroll rate (px per ms) keeps the pre-roll
-  // scroll speed continuous with the post-start scroll speed — no
-  // visible acceleration at the moment audio begins.
-  if (K.PRE_ROLL_MS > 0 && anchors.length >= 2) {
-    const first = anchors[0];
-    const finalA = anchors[anchors.length - 1];
-    const rate = (finalA.x - first.x) / (finalA.t - first.t);
-    const leadIn = rate * K.PRE_ROLL_MS;
-    anchors.unshift({ t: -K.PRE_ROLL_MS, x: first.x - leadIn });
   }
   return anchors;
 }
@@ -1117,155 +1103,250 @@ function cloneMeasureShell(srcSvg: SVGSVGElement, measureIdx: number = 0): SVGSV
   return out;
 }
 
-/** Minimal MEI mirroring the source's staffGrp: one measure per staff,
- *  filled with whole rests, header carrying the given per-staff clefs +
- *  shared keysig + per-event meter, with the original brace/bracket
- *  symbol. Used to pre-render a clean "full header" shell for every
- *  (clefs, keysig, meter) combination a score visits — so the frozen
- *  overlay matches the rendered system regardless of which axis
- *  changes mid-piece. */
-function headerOnlyMei(
-  group: StaffGroup,
-  clefs: ReadonlyArray<ClefState>,
-  keysig: string,
-  meter: { count: number; unit: number; sym: string },
-): string {
-  const fallbackClef: ClefState = { shape: 'G', line: '2' };
-  const staffDefs = group.staves.map((s, i) => {
-    const c = clefs[i] ?? clefs[0] ?? fallbackClef;
-    return `<staffDef n="${s.n}" lines="${s.lines}" clef.shape="${c.shape}" clef.line="${c.line}"/>`;
-  }).join('');
-  const layers = group.staves.map((s) =>
-    `<staff n="${s.n}"><layer n="1"><rest dur="1"/></layer></staff>`,
-  ).join('');
-  // Wrap N staves in an inner <staffGrp bar.thru="true"> when a brace/
-  // bracket is present so Verovio renders the symbol — matching the
-  // canonical MusicXML→MEI conversion shape. Single-staff pieces with
-  // no symbol skip the inner wrapper.
-  const inner = group.symbol
-    ? `<staffGrp bar.thru="true"><grpSym symbol="${group.symbol}"/>${staffDefs}</staffGrp>`
-    : staffDefs;
-  const meterAttrs = meter.sym
-    ? `meter.count="${meter.count}" meter.unit="${meter.unit}" meter.sym="${meter.sym}"`
-    : `meter.count="${meter.count}" meter.unit="${meter.unit}"`;
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<mei xmlns="http://www.music-encoding.org/ns/mei" meiversion="5.0">
-  <meiHead><fileDesc><titleStmt><title>k</title></titleStmt><pubStmt/></fileDesc></meiHead>
-  <music><body><mdiv><score>
-    <scoreDef ${meterAttrs} key.sig="${keysig}">
-      <staffGrp>${inner}</staffGrp>
-    </scoreDef>
-    <section><measure n="1">${layers}</measure></section>
-  </score></mdiv></body></music>
-</mei>`;
+/** Result bundle from `buildPannedShells`. */
+export interface PannedShellsResult {
+  shells: Map<string, SVGSVGElement>;
+  /** Right edge of the widest shell's chrome, in svg-rect-relative px.
+   *  Drives overlay/playhead/mask sizing — the overlay box has to reserve
+   *  enough room for the WIDEST keysig fingerprint so the playhead never
+   *  ends up sitting INSIDE a wide-keysig shell. */
+  maxChromeRight: number;
 }
 
-/** Build header shells by cloning measures directly from the rendered
- *  pan SVG. Shell = brace/bracket + N clefs + N keysigs + N meters,
- *  with measure music stripped. Keyed by `headerFingerprint`.
+/**
+ * Build a shell for every unique header fingerprint by COMPOSITING from
+ * pan glyphs and reflowing the chrome layout.
  *
- *  Why this is preferred over `renderHeaderShells`: the cloned shells
- *  share the pan's outer viewBox + Verovio internal scale, so no
- *  post-render alignment math is needed — clefs and accidentals land
- *  exactly on the pan's staff lines. The trade-off is we can only
- *  build a shell for a fingerprint that ACTUALLY HAS a measure
- *  somewhere in the score (which is true for every event we record).
+ * Layout rule (the only one):
+ *   For every shell, place chrome elements left-to-right with a fixed
+ *   padding `pad` (derived once from m1's natural Verovio spacing):
+ *     clef   at  m1.clef position             (constant across all fps)
+ *     keysig at  clef.right + pad             (only when fp.keysig != 0)
+ *     meter  at  keysig.right + pad           (or clef.right + pad if no keysig)
  *
- *  panSvg must still have its measure-1 clef/keysig/meter intact —
- *  call this BEFORE `stripHeadersFrom`. */
-export function cloneShellsFromPan(
+ *   Each fp's meter therefore "adapts" to the keysig width — a wide
+ *   7-sharp keysig pushes the meter further right than a 0-keysig fp
+ *   does. The overlay box is sized for the WIDEST chrome (returned via
+ *   `maxChromeRight`) so the playhead never collides with any fp.
+ *
+ * Why this composite/reflow approach:
+ *   Verovio's natural layout in m1 is computed for m1's specific keysig
+ *   width — when we swap in a wider keysig, m1's slot is too narrow and
+ *   adjacent elements collide. Rather than try to match Verovio's
+ *   internal padding rules per-fp, we DO our own layout pass with one
+ *   derived padding constant. Verovio's internal glyph layout WITHIN
+ *   each axis (sharp positions inside a keysig, digit stacking inside
+ *   a meter) is preserved untouched — we only translate the axis as a
+ *   unit.
+ *
+ * Cancel naturals (E261 SMuFL codepoint) inside a swapped keysig are
+ * stripped — frozen overlay shows the STABLE keysig only. Cancel
+ * naturals are visible in pan as the change measure scrolls past, and
+ * don't belong in the static chrome.
+ *
+ * panSvg must still have its measure-1 chrome intact — call this
+ * BEFORE `stripHeadersFrom`.
+ */
+export function buildPannedShells(
   panSvg: SVGSVGElement,
   events: ReadonlyArray<HeaderEvent>,
-): Map<string, SVGSVGElement> {
+  svgRect: DOMRect,
+): PannedShellsResult {
   const shells = new Map<string, SVGSVGElement>();
-  for (const e of events) {
-    const fp = headerFingerprint(e);
-    if (shells.has(fp)) continue;
-    const shell = cloneMeasureShell(panSvg, e.measureIdx);
-    if (shell) shells.set(fp, shell);
-  }
-  return shells;
-}
+  let maxChromeRight = 0;
+  if (events.length === 0) return { shells, maxChromeRight };
+  const measures = panSvg.querySelectorAll('.measure');
+  const m1 = measures[0];
+  if (!m1) return { shells, maxChromeRight };
 
-/** Render one SVG shell per unique header event via Verovio. Shell =
- *  brace/bracket + N clefs + N keysigs + N meters, with measure music
- *  stripped. Keyed by `headerFingerprint`. Each event carries its own
- *  meter so changing time signatures emit distinct shells.
- *
- *  Reuses a single Verovio toolkit across all shells — `loadData`
- *  resets internal state, and constructing a fresh toolkit per shell
- *  was a measurable mount-time cost on pieces with many key/meter
- *  changes. */
-export async function renderHeaderShells(
-  events: ReadonlyArray<HeaderEvent>,
-  group: StaffGroup,
-): Promise<Map<string, SVGSVGElement>> {
-  const { VerovioToolkit, module } = await loadVerovio();
-  const byFingerprint = new Map<string, HeaderEvent>();
-  for (const e of events) {
-    const fp = headerFingerprint(e);
-    if (!byFingerprint.has(fp)) byFingerprint.set(fp, e);
-  }
-  if (byFingerprint.size === 0) return new Map();
-  const tk = new VerovioToolkit(module);
-  tk.setOptions({
-    breaks: 'none', scale: 40, pageWidth: 100000, pageHeight: 60000,
-    pageMarginTop: 40, pageMarginBottom: 40,
-    pageMarginLeft: 40, pageMarginRight: 40,
-    adjustPageHeight: true, adjustPageWidth: true, svgViewBox: true,
-    header: 'none', footer: 'none',
-  });
-  const shells = new Map<string, SVGSVGElement>();
-  for (const [fp, e] of byFingerprint) {
-    try {
-      tk.loadData(headerOnlyMei(group, e.clefs, e.keysig, e.meter));
-      const svgStr = tk.renderToSVG(1, false)
-        .replace(/\bfill="(black|#000|#000000)"/gi, 'fill="currentColor"')
-        .replace(/\bstroke="(black|#000|#000000)"/gi, 'stroke="currentColor"');
-      const tmp = document.createElement('div');
-      tmp.innerHTML = svgStr;
-      const srcSvg = tmp.querySelector('svg') as SVGSVGElement | null;
-      if (!srcSvg) continue;
-      const shell = cloneMeasureShell(srcSvg, 0);
-      if (shell) shells.set(fp, shell);
-    } catch (err) {
-      console.warn(`[score] shell render failed for ${fp}:`, err);
+  // Verovio nests the actual glyph drawing in `<svg class="definition-scale">`
+  // whose internal viewBox is ~25× larger than the outer SVG's viewBox —
+  // every chrome glyph's `<use transform="translate(...)">` is in THIS
+  // internal coord space, not the outer one. To shift a swapped glyph by
+  // a measured display-px delta, we convert via the def-scale viewBox →
+  // pan display ratio (def_scale_units_per_display_px).
+  const defScale = panSvg.querySelector('svg.definition-scale') as SVGSVGElement | null;
+  if (!defScale || svgRect.width <= 0) return { shells, maxChromeRight };
+  const defVB = defScale.viewBox.baseVal;
+  if (defVB.width <= 0 || defVB.height <= 0) return { shells, maxChromeRight };
+  const defScalePerPxX = defVB.width / svgRect.width;
+
+  const m1Staves = Array.from(m1.querySelectorAll('.staff'));
+
+  // Derive chrome inter-element padding from m1's natural Verovio layout
+  // (first staff). Used when reflowing each shell so the keysig-meter
+  // and clef-keysig gaps stay visually consistent with what Verovio would
+  // have done. Two derivations:
+  //   • m1 has populated keysig: pad = m1's actual clef-keysig gap
+  //   • m1 has empty keysig:     pad = (clef-meter distance) / 2
+  // The single value is reused on both sides; tonal music's chrome
+  // padding is symmetric enough that one number suffices.
+  let padDisplay = 0;
+  {
+    const m1Clef = m1Staves[0]?.querySelector('.clef');
+    const m1Ks = m1Staves[0]?.querySelector('.keySig');
+    const m1Meter = m1Staves[0]?.querySelector('.meterSig');
+    if (m1Clef && m1Meter) {
+      const clefR = m1Clef.getBoundingClientRect();
+      const meterR = m1Meter.getBoundingClientRect();
+      const ksR = m1Ks?.getBoundingClientRect();
+      if (ksR && ksR.width > 0) {
+        padDisplay = Math.max(0, ksR.left - clefR.right);
+      } else {
+        padDisplay = Math.max(0, (meterR.left - clefR.right) / 2);
+      }
     }
   }
-  tk.destroy();
-  return shells;
-}
 
-/** Display-px width of each shell's clef+keysig+meter at the given stage
- *  height. Attaches clones of all shells in one off-screen probe so layout
- *  flushes once for the whole batch. The overlay sizes to the widest of
- *  these, which lets the fade zone (overlay-right → playhead) stretch into
- *  any blank space narrow keysigs leave unused. */
-export function measureShellWidths(
-  shells: Map<string, SVGSVGElement>, stageHeightPx: number,
-): Map<string, number> {
-  const widths = new Map<string, number>();
-  if (shells.size === 0) return widths;
-  const probe = document.createElement('div');
-  probe.style.cssText =
-    `position:fixed;left:-99999px;top:0;height:${stageHeightPx}px;` +
-    `display:flex;pointer-events:none;z-index:-1;`;
-  const clones: Array<{ fp: string; clone: SVGSVGElement }> = [];
-  for (const [fp, shell] of shells) {
-    const clone = shell.cloneNode(true) as SVGSVGElement;
-    clone.style.display = 'block';
-    clone.style.height = '100%';
-    clone.style.width = 'auto';
-    probe.appendChild(clone);
-    clones.push({ fp, clone });
+  // Walk events forward, tracking for each axis the measureIdx where
+  // that axis was last set to its current value. When we encounter a
+  // not-yet-seen fingerprint, snapshot those source-measure indices
+  // and use them to compose the shell.
+  let prev: HeaderEvent | null = null;
+  let clefSourceMi = 0;
+  let keysigSourceMi = 0;
+  let meterSourceMi = 0;
+  const seen = new Set<string>();
+
+  /** Tag a clone with our additional translate while preserving any
+   *  intrinsic transform Verovio gave it. */
+  const prependTranslate = (el: Element, dxUnits: number) => {
+    if (Math.abs(dxUnits) < 0.5) return;
+    const existing = el.getAttribute('transform') ?? '';
+    const offset = `translate(${dxUnits}, 0)`;
+    el.setAttribute('transform', existing ? `${offset} ${existing}` : offset);
+  };
+
+  for (const e of events) {
+    if (prev) {
+      const clefDiff = e.clefs.some((c, i) =>
+        c.shape !== prev!.clefs[i]?.shape || c.line !== prev!.clefs[i]?.line);
+      if (clefDiff) clefSourceMi = e.measureIdx;
+      if (e.keysig !== prev.keysig) keysigSourceMi = e.measureIdx;
+      const meterDiff =
+        e.meter.count !== prev.meter.count ||
+        e.meter.unit !== prev.meter.unit ||
+        e.meter.sym !== prev.meter.sym;
+      if (meterDiff) meterSourceMi = e.measureIdx;
+    }
+    prev = e;
+
+    const fp = headerFingerprint(e);
+    if (seen.has(fp)) continue;
+    seen.add(fp);
+
+    const shell = cloneMeasureShell(panSvg, 0);
+    if (!shell) continue;
+
+    const shellStaves = Array.from(shell.querySelectorAll('.staff'));
+    const limit = Math.min(shellStaves.length, m1Staves.length);
+    let shellChromeRight = 0;
+
+    for (let i = 0; i < limit; i++) {
+      const m1ClefEl = m1Staves[i].querySelector('.clef');
+      const m1MeterEl = m1Staves[i].querySelector('.meterSig');
+      const shellClefEl = shellStaves[i].querySelector('.clef');
+      const shellKsEl = shellStaves[i].querySelector('.keySig');
+      const shellMeterEl = shellStaves[i].querySelector('.meterSig');
+      if (!m1ClefEl) continue;
+
+      // ── CLEF ────────────────────────────────────────────────────────
+      // Clef goes at m1's natural position. If clef changes mid-piece,
+      // swap in the source clef glyph translated to m1.clef's position.
+      // Clef widths are uniform enough across G/F/C clefs that we don't
+      // reflow keysig+meter to accommodate width deltas — the small
+      // fudge is invisible in practice.
+      const m1ClefRect = m1ClefEl.getBoundingClientRect();
+      let clefRightSvg = m1ClefRect.right - svgRect.left;
+      if (clefSourceMi !== 0) {
+        const sourceClefEl = measures[clefSourceMi]?.querySelectorAll('.staff')[i]?.querySelector('.clef');
+        const sourceClefRect = sourceClefEl?.getBoundingClientRect();
+        if (sourceClefEl && sourceClefRect && sourceClefRect.width > 0 && shellClefEl?.parentNode) {
+          const dxDisplay = m1ClefRect.left - sourceClefRect.left;
+          const newClef = sourceClefEl.cloneNode(true) as Element;
+          prependTranslate(newClef, dxDisplay * defScalePerPxX);
+          shellClefEl.parentNode.replaceChild(newClef, shellClefEl);
+          // Recompute right edge using source clef's width post-shift.
+          clefRightSvg = (m1ClefRect.left - svgRect.left) + sourceClefRect.width;
+        }
+      }
+
+      // ── KEYSIG ──────────────────────────────────────────────────────
+      // Place at clef.right + pad. For empty fp (keysig=0), strip the
+      // shell's existing keysig element. Otherwise clone the source
+      // measure's keysig, strip cancel naturals, translate to target.
+      let keysigRightSvg = clefRightSvg;
+      if (e.keysig === '0') {
+        if (shellKsEl?.parentNode) shellKsEl.parentNode.removeChild(shellKsEl);
+      } else {
+        const sourceMeasure = keysigSourceMi === 0 ? m1 : measures[keysigSourceMi];
+        const sourceKs = sourceMeasure?.querySelectorAll('.staff')[i]?.querySelector('.keySig');
+        const sourceKsRect = sourceKs?.getBoundingClientRect();
+        if (sourceKs && sourceKsRect && sourceKsRect.width > 0) {
+          const newKs = sourceKs.cloneNode(true) as Element;
+          // Strip cancel naturals (SMuFL natural-sign codepoint E261).
+          // Frozen overlay shows the STABLE keysig only — naturals from
+          // mid-piece transitions are visible in pan as the change
+          // measure scrolls past, and would just clutter the chrome.
+          for (const acc of Array.from(newKs.querySelectorAll('.keyAccid'))) {
+            const u = acc.querySelector('use');
+            const href = u?.getAttribute('xlink:href') ?? u?.getAttribute('href') ?? '';
+            if (href.includes('E261')) acc.remove();
+          }
+          const targetLeftSvg = clefRightSvg + padDisplay;
+          const dxDisplay = targetLeftSvg - (sourceKsRect.left - svgRect.left);
+          prependTranslate(newKs, dxDisplay * defScalePerPxX);
+          if (shellKsEl?.parentNode) {
+            shellKsEl.parentNode.replaceChild(newKs, shellKsEl);
+          } else if (shellMeterEl?.parentNode) {
+            shellMeterEl.parentNode.insertBefore(newKs, shellMeterEl);
+          } else {
+            shellStaves[i].appendChild(newKs);
+          }
+          // Width estimate uses source rect (may slightly over-allocate
+          // when naturals were stripped, but they're stripped GLYPHS so
+          // the visible content is narrower than this — the over-
+          // allocation just leaves a hair more space before the meter).
+          keysigRightSvg = targetLeftSvg + sourceKsRect.width;
+        }
+      }
+
+      // ── METER ───────────────────────────────────────────────────────
+      // Position immediately after keysig (or clef when no keysig).
+      // Always re-position even when meter source = m1: the pad-derived
+      // target may differ from m1's natural meter.left when keysig is
+      // wider/narrower than m1's. For meter changes, swap in the source
+      // meter glyph THEN apply the position translate.
+      if (m1MeterEl && shellMeterEl) {
+        const m1MeterRect = m1MeterEl.getBoundingClientRect();
+        let activeMeterEl: Element = shellMeterEl;
+        let activeMeterWidth = m1MeterRect.width;
+        let activeMeterNaturalLeftSvg = m1MeterRect.left - svgRect.left;
+        if (meterSourceMi !== 0) {
+          const sourceMeterEl = measures[meterSourceMi]?.querySelectorAll('.staff')[i]?.querySelector('.meterSig');
+          const sourceMeterRect = sourceMeterEl?.getBoundingClientRect();
+          if (sourceMeterEl && sourceMeterRect && sourceMeterRect.width > 0 && shellMeterEl.parentNode) {
+            const newMeter = sourceMeterEl.cloneNode(true) as Element;
+            shellMeterEl.parentNode.replaceChild(newMeter, shellMeterEl);
+            activeMeterEl = newMeter;
+            activeMeterWidth = sourceMeterRect.width;
+            activeMeterNaturalLeftSvg = sourceMeterRect.left - svgRect.left;
+          }
+        }
+        const targetMeterLeftSvg = keysigRightSvg + (e.keysig === '0' ? padDisplay : padDisplay);
+        const dxDisplay = targetMeterLeftSvg - activeMeterNaturalLeftSvg;
+        prependTranslate(activeMeterEl, dxDisplay * defScalePerPxX);
+        const meterRightSvg = targetMeterLeftSvg + activeMeterWidth;
+        if (meterRightSvg > shellChromeRight) shellChromeRight = meterRightSvg;
+      } else {
+        if (keysigRightSvg > shellChromeRight) shellChromeRight = keysigRightSvg;
+      }
+    }
+
+    if (shellChromeRight > maxChromeRight) maxChromeRight = shellChromeRight;
+    shells.set(fp, shell);
   }
-  document.body.appendChild(probe);
-  for (const { fp, clone } of clones) {
-    const w = measureHeaderWidth(clone.querySelector('.measure'), clone.getBoundingClientRect());
-    widths.set(fp, w);
-  }
-  probe.remove();
-  return widths;
+  return { shells, maxChromeRight };
 }
 
 /** Tempo overlay — a single text node showing the active tempo marking.
@@ -1299,88 +1380,6 @@ export function createTempoOverlay(
       }, 180);
     },
   };
-}
-
-/** Align each shell SVG inside the overlay so its staff lines coincide
- *  with the pan's staff lines. Necessary because Verovio renders the
- *  shell (header-only MEI) with a smaller intrinsic viewBox than the
- *  pan (full piece), so when both fill `height: 100%` of the stage,
- *  the per-internal-unit scale differs and clefs/accidentals land
- *  shifted from their staves.
- *
- *  Strategy: measure ALL pan staff line ys (5 per staff) and the
- *  matching shell staff line ys, then least-squares fit an affine
- *  y-transform `y' = a*y + b` over the full 5N-point set. Aligning on
- *  all lines (rather than just per-staff mids) is what keeps
- *  individual sharps/flats sitting on the correct line — a mids-only
- *  fit can match staff centers while leaving the 5-line SPREAD
- *  mismatched, putting accidentals between lines.
- *
- *  Single-staff (N=1) degenerates to a pure translate when shell and
- *  pan happen to have the same line spacing, otherwise still benefits
- *  from the fit.
- *
- *  panLineYs: per-line ys (5 lines per staff) in stage coords —
- *  whatever `measureStaffYs` returned.
- */
-export function alignShellsToPan(
-  overlay: FrozenOverlay,
-  panLineYs: ReadonlyArray<number>,
-  staffCount: number,
-  stageRect: DOMRect,
-  /** Optional allowlist of fingerprints to align. When set, shells
-   *  whose `data-fp` isn't in the set are left untransformed (used to
-   *  skip the pan-cloned initial shell that's already aligned). */
-  onlyFps?: ReadonlySet<string>,
-): void {
-  const linesPerStaff = 5;
-  const expected = linesPerStaff * staffCount;
-  if (staffCount === 0 || panLineYs.length < expected) return;
-
-  for (const layer of Array.from(overlay.host.querySelectorAll<HTMLDivElement>('.score-frozen-shell'))) {
-    if (onlyFps) {
-      const fp = layer.getAttribute('data-fp');
-      if (!fp || !onlyFps.has(fp)) continue;
-    }
-    const svg = layer.querySelector<SVGSVGElement>('svg');
-    if (!svg) continue;
-
-    // Measure shell's per-line ys in the same per-staff order as the pan.
-    const shellLineYs: number[] = [];
-    for (const staff of Array.from(svg.querySelectorAll('.staff'))) {
-      for (const c of Array.from(staff.children)) {
-        if (c.tagName !== 'path') continue;
-        const r = (c as Element).getBoundingClientRect();
-        if (r.width === 0 && r.height === 0) continue;
-        shellLineYs.push((r.top + r.bottom) / 2 - stageRect.top);
-      }
-    }
-    if (shellLineYs.length < expected) continue;
-
-    // Least-squares fit: y_pan = a * y_shell + b over all 5N points.
-    // With multi-staff this captures both staff-to-staff distance and
-    // line-to-line distance in one transform.
-    const n = expected;
-    let sumS = 0, sumP = 0, sumSS = 0, sumSP = 0;
-    for (let i = 0; i < n; i++) {
-      const s = shellLineYs[i], p = panLineYs[i];
-      sumS += s; sumP += p; sumSS += s * s; sumSP += s * p;
-    }
-    const denom = n * sumSS - sumS * sumS;
-    let a = 1, b = 0;
-    if (Math.abs(denom) > 1e-6) {
-      a = (n * sumSP - sumS * sumP) / denom;
-      b = (sumP - a * sumS) / n;
-    } else {
-      b = (sumP - sumS) / n;
-    }
-    // Y-axis scale + translate. X stays at 1:1 so the chrome's
-    // horizontal extent matches what `measureShellWidths` measured —
-    // the overlay width is sized to that, so the chrome lands right
-    // at the playhead boundary and isn't clipped by the mask.
-    svg.style.transformOrigin = '0 0';
-    svg.style.transform = `translate(0, ${b}px) scale(1, ${a})`;
-  }
 }
 
 /** Frozen header overlay + the only API for updating it: `setCurrent(fp)`
@@ -1465,26 +1464,6 @@ export function stripStaffLinesFrom(root: Element) {
       if (c.tagName === 'path') c.remove();
     }
   }
-}
-
-/** Strip non-visible Verovio bookkeeping nodes (page/system break
- *  markers, milestone trackers, page header) and other elements that
- *  add DOM mass without contributing to the rendered scrolling view.
- *  For Ravel's full piece this drops ~3% of SVG nodes outright; in
- *  loop mode that's ×LOOP_COPIES copies' worth.
- *
- *  Pedal markings (`.pedal`) — Ravel ships 438 of them, none of which
- *  the scrolling preview UI shows usefully — are stripped here too.
- *  If a future score wants pedal display this can become opt-in. */
-export function stripChromeFrom(root: Element) {
-  const sel = [
-    '.pb', '.sb',
-    '.pgHead', '.pgFoot',
-    '.pageMilestoneEnd', '.pageMilestoneStart',
-    '.systemMilestone', '.sectionMilestone', '.systemMilestoneEnd',
-    '.pedal',
-  ].join(',');
-  for (const el of Array.from(root.querySelectorAll(sel))) el.remove();
 }
 
 /** Remove the opening clef/keysig/meter from measure 1 plus the
@@ -1779,12 +1758,9 @@ export function setupRenderLoop(args: {
         // Keep translate in (-musicWidth, 0]. The phantom leader tile
         // positioned at `-musicWidth` means either side of that range
         // has identical content to what the wrap reveals — the snap
-        // is visually seamless. Skipping during pre-roll (ms<0) preserves
-        // the lead-in pose where translate is intentionally positive.
-        if (ms >= 0) {
-          while (translateX <= -musicWidth) { translateX += musicWidth; wrapOffset += musicWidth; }
-          while (translateX > 0) { translateX -= musicWidth; wrapOffset -= musicWidth; }
-        }
+        // is visually seamless.
+        while (translateX <= -musicWidth) { translateX += musicWidth; wrapOffset += musicWidth; }
+        while (translateX > 0) { translateX -= musicWidth; wrapOffset -= musicWidth; }
       } else {
         translateX = playheadPx - xAtMs(ms);
       }

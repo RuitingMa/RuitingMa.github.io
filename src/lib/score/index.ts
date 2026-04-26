@@ -18,22 +18,19 @@
 import { K } from './constants';
 import { ScorePlayer } from './player';
 import {
-  alignShellsToPan,
   appendLoopLeader,
   applyLoopSpacing,
   buildAnchors,
-  cloneShellsFromPan,
+  buildPannedShells,
   createFrozenOverlay,
   createStaffLinesLayer,
   createTempoOverlay,
   injectCopies,
   makeXAtMs,
   measureHeaderWidth,
-  measureShellWidths,
   measureStaffYs,
   msAtX,
   padAnchors,
-  renderHeaderShells,
   renderScore,
   setFadeMaskVars,
   setupRenderLoop,
@@ -137,19 +134,25 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
   const xAtMs = makeXAtMs(anchors);
 
   // Re-time each mid-piece header event so its startMs matches the moment
-  // the inline change glyph in the pan (clef and/or keysig) actually
-  // crosses the playhead. Without this, overlay crossfades fire at the
-  // first-note onset (hundreds of ms later at normal scroll rates) and
-  // the glyph vanishes into the header before the header updates.
-  // When both clef and keysig change we anchor to whichever glyph sits
-  // leftmost — they render side by side at the start of the measure.
+  // the inline change glyph in the pan (clef, keysig, and/or meter)
+  // actually crosses the playhead. Without this, overlay crossfades
+  // fire at the first-note onset (hundreds of ms later at normal scroll
+  // rates) and the glyph vanishes into the header before the header
+  // updates. When several axes change at once we anchor to whichever
+  // glyph sits leftmost — clef / keysig / meterSig render side by side
+  // in that order at the start of a change measure, so leftmost-wins
+  // picks the change-leading glyph and the rest follow it past the
+  // playhead at the same scroll rate. Pure meter changes (no clef/key)
+  // need .meterSig in the selector — without it the event would fall
+  // through and keep its raw measure-onset time, drifting the overlay
+  // off from the visible change.
   const svgMeasures = Array.from(svgEl.querySelectorAll('.measure'));
   for (const evt of rendered.headerEvents) {
     if (evt.measureIdx === 0) continue;
     const m = svgMeasures[evt.measureIdx];
     if (!m) continue;
     let leftMost: DOMRect | null = null;
-    for (const g of Array.from(m.querySelectorAll('.clef, .keySig'))) {
+    for (const g of Array.from(m.querySelectorAll('.clef, .keySig, .meterSig'))) {
       const r = (g as Element).getBoundingClientRect();
       if (r.width === 0 && r.height === 0) continue;
       if (!leftMost || r.left < leftMost.left) leftMost = r;
@@ -180,30 +183,17 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
   const staffYs = measureStaffYs(firstMeasureStaves, stageRect0.top);
 
   // --- Build overlay shells + playhead + mask ---------------------------
-  // Hybrid: clone the pan's measure-1 chrome for the INITIAL header
-  // (guarantees the steady-state shell renders at the exact same scale
-  // as the pan music — the overlay clef/keysig/meter look like a
-  // continuation of the score itself rather than enlarged chrome). For
-  // any mid-piece header CHANGE (clef swap, modulation, meter shift)
-  // Verovio renders a fresh shell — these get an LSQ y-affine to land
-  // staff lines on the pan's. Mid-piece shells naturally render at
-  // Verovio's wider intrinsic scale; when crossfaded in, the overlay's
-  // overflow:hidden clips them to the same width as the initial shell,
-  // briefly hiding the rightmost glyph (typically meter) until the
-  // user's eye catches up. Acceptable trade-off vs constructing
-  // composite shells from pan elements (DOM surgery).
-  const verovioShells = await renderHeaderShells(rendered.headerEvents, rendered.staffGroup);
-  const panInitialShells = cloneShellsFromPan(svgEl, rendered.headerEvents.slice(0, 1));
-  const shellMap = new Map(verovioShells);
-  for (const [fp, shell] of panInitialShells) shellMap.set(fp, shell);
-  // Overlay sized to the pan's actual measure-1 header width —
-  // matches the user's "header max width + small tolerance" design
-  // intent and produces the same visual scale as the music. Verovio-
-  // rendered mid-piece shells (which have their own wider intrinsic
-  // scale) are clipped by the overlay's overflow:hidden during their
-  // brief crossfade window.
-  const headerWidestWidth = actualHeaderWidth;
-  void measureShellWidths;
+  // Each shell is composed from pan glyphs and reflowed to a uniform
+  // chrome layout: clef at m1.clef position; keysig at clef.right + pad
+  // (only when keysig != 0); meter at keysig.right + pad. Cancel
+  // naturals from mid-piece keysig changes are stripped — frozen
+  // overlay is the STABLE keysig display only. `maxChromeRight` is the
+  // right edge of the WIDEST fp's chrome, used to size the overlay box
+  // so the playhead never lands inside any fp's chrome.
+  const { shells: shellMap, maxChromeRight } = buildPannedShells(
+    svgEl, rendered.headerEvents, svgRect0,
+  );
+  const headerWidestWidth = Math.max(actualHeaderWidth, maxChromeRight);
 
   // Playhead sits a small constant offset to the right of the actual
   // widest header. HEADER_MAX_PX acts as a stable axis floor so scores
@@ -230,16 +220,7 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
   const frozenOverlay = createFrozenOverlay(
     shellMap, initialFingerprint, headerWidestWidth,
   );
-  if (frozenOverlay) {
-    stage.appendChild(frozenOverlay.host);
-    // Apply LSQ y-affine to Verovio shells only — pan-cloned shells
-    // share the pan's coordinate system and are already pixel-perfect.
-    const verovioFps = new Set(verovioShells.keys());
-    for (const fp of panInitialShells.keys()) verovioFps.delete(fp);
-    alignShellsToPan(
-      frozenOverlay, staffYs, rendered.staffGroup.staves.length, stageRect0, verovioFps,
-    );
-  }
+  if (frozenOverlay) stage.appendChild(frozenOverlay.host);
 
   // Tempo overlay: only build when the piece actually has a tempo
   // marking that's worth showing. A score whose only tempo is the
@@ -268,7 +249,7 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
   }
   setFadeMaskVars(stage, headerWidestWidth, playheadPx);
 
-  const player = new ScorePlayer(rendered, loop, K.PRE_ROLL_MS, K.TAIL_MS);
+  const player = new ScorePlayer(rendered, loop, K.TAIL_MS);
   if (import.meta.env.DEV) {
     (host as unknown as { _player: ScorePlayer })._player = player;
   }
@@ -344,7 +325,7 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
     // position and peeling the class off.
     pan.classList.add('is-resetting');
     setTimeout(() => {
-      player.resetToStart();
+      player.seek(0);
       // One rAF so renderFrame has a chance to repaint at the new
       // pausedAt=0 position BEFORE opacity returns.
       requestAnimationFrame(() => {
@@ -413,8 +394,20 @@ export function attachAllScores() {
         for (const e of entries) {
           if (!e.isIntersecting) continue;
           obs.disconnect();
-          const handle = await mountScore(host);
-          if (handle) mounted.set(host, handle);
+          // Wrap in try/catch so a failure inside mountScore (Verovio
+          // load failure, WASM fetch error, malformed MEI, stale Vite
+          // dep cache, …) surfaces as a console warning instead of a
+          // silent unhandled rejection. Without this, an awaited dynamic
+          // import that never resolves left mountScore hung mid-way
+          // through with no visible error — the score showed only its
+          // SVG injection (no playhead, no overlay, no listeners) and
+          // the page looked "broken but not loud about it".
+          try {
+            const handle = await mountScore(host);
+            if (handle) mounted.set(host, handle);
+          } catch (err) {
+            console.warn('[score] mount failed:', err);
+          }
         }
       },
       { rootMargin: `${K.IO_ROOT_MARGIN_PX}px 0px ${K.IO_ROOT_MARGIN_PX}px 0px` },
