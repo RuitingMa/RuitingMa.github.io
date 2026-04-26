@@ -34,6 +34,7 @@ import {
   renderScore,
   setFadeMaskVars,
   setupRenderLoop,
+  sliceSvgIntoTiles,
   stripHeadersFrom,
   stripStaffLinesFrom,
   type ScoreSource,
@@ -108,14 +109,26 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
   }
 
   // --- Inject SVG copies into pan -----------------------------------------
-  const panSvgs = injectCopies(pan, rendered.svg, loop ? K.LOOP_COPIES : 1);
-  const svgEl = panSvgs[0];
-  if (!svgEl) return null;
+  // Loop scores always use N identical copies. Non-loop scores get one
+  // copy that we then slice into tiles when its displayed width exceeds
+  // GPU single-texture limits — see sliceSvgIntoTiles for the rationale.
+  // Tile slicing is skipped for loop because loop pieces are short and
+  // never hit the threshold; combining loop × tile would also force a
+  // more elaborate wrap implementation.
+  const initialPanSvgs = injectCopies(pan, rendered.svg, loop ? K.LOOP_COPIES : 1);
+  const panSvgs = (!loop && initialPanSvgs.length === 1)
+    ? sliceSvgIntoTiles(pan, initialPanSvgs[0], K.MAX_TILE_PX)
+    : initialPanSvgs;
+  const tile0 = panSvgs[0];
+  if (!tile0) return null;
 
   // --- Measure geometry (anchors, header, staff y's) ----------------------
-  const svgRect0 = svgEl.getBoundingClientRect();
+  // panRect0 spans all tiles (or the single SVG when unsliced); coords are
+  // computed relative to it so the same math works in both layouts. tile 0
+  // is the leftmost tile so its left edge equals panRect0.left.
+  const panRect0 = pan.getBoundingClientRect();
   const stageRect0 = stage.getBoundingClientRect();
-  const firstMeasure = svgEl.querySelector('.measure');
+  const firstMeasure = tile0.querySelector('.measure');
   // ALL staves in measure 1 — piano grand staff has 2; orchestral N.
   // Their y-positions feed the staff-lines layer so every staff gets
   // its 5 horizontal lines, not just the top one.
@@ -123,12 +136,12 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
 
   // measure-1 header in the pan's own coordinates — drives loop
   // copy-shifting so music tiles end-to-end across loop copies.
-  const actualHeaderWidth = measureHeaderWidth(firstMeasure, svgRect0);
-  const musicWidth = svgRect0.width - actualHeaderWidth;
+  const actualHeaderWidth = measureHeaderWidth(firstMeasure, panRect0);
+  const musicWidth = panRect0.width - actualHeaderWidth;
 
   const anchors = padAnchors(
-    buildAnchors(svgEl, rendered, svgRect0),
-    rendered, loop, musicWidth, svgEl, svgRect0,
+    buildAnchors(pan, rendered, panRect0),
+    rendered, loop, musicWidth, pan, panRect0,
   );
   rendered.anchors = anchors;
   const xAtMs = makeXAtMs(anchors);
@@ -146,7 +159,8 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
   // need .meterSig in the selector — without it the event would fall
   // through and keep its raw measure-onset time, drifting the overlay
   // off from the visible change.
-  const svgMeasures = Array.from(svgEl.querySelectorAll('.measure'));
+  // Walk the entire pan so tiles' measures are picked up in order.
+  const svgMeasures = Array.from(pan.querySelectorAll('.measure'));
   for (const evt of rendered.headerEvents) {
     if (evt.measureIdx === 0) continue;
     const m = svgMeasures[evt.measureIdx];
@@ -158,7 +172,7 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
       if (!leftMost || r.left < leftMost.left) leftMost = r;
     }
     if (!leftMost) continue;
-    const centerX = leftMost.left + leftMost.width / 2 - svgRect0.left;
+    const centerX = leftMost.left + leftMost.width / 2 - panRect0.left;
     evt.startMs = msAtX(anchors, centerX);
   }
 
@@ -176,7 +190,7 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
     if (!glyph) continue;
     const r = (glyph as Element).getBoundingClientRect();
     if (r.width === 0 && r.height === 0) continue;
-    const centerX = r.left + r.width / 2 - svgRect0.left;
+    const centerX = r.left + r.width / 2 - panRect0.left;
     evt.startMs = msAtX(anchors, centerX);
   }
 
@@ -191,7 +205,7 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
   // right edge of the WIDEST fp's chrome, used to size the overlay box
   // so the playhead never lands inside any fp's chrome.
   const { shells: shellMap, maxChromeRight } = buildPannedShells(
-    svgEl, rendered.headerEvents, svgRect0,
+    pan, tile0, rendered.headerEvents, panRect0,
   );
   const headerWidestWidth = Math.max(actualHeaderWidth, maxChromeRight);
 
@@ -241,7 +255,16 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
   // and scroll past the playhead naturally.
   for (const s of panSvgs) stripStaffLinesFrom(s);
   if (frozenOverlay) stripStaffLinesFrom(frozenOverlay.host);
-  for (const s of panSvgs) stripHeadersFrom(s);
+  // Header chrome (m1 clef/keysig/meter, system bar, brace) lives only
+  // on tile 0 for sliced layouts. Stripping later tiles would clobber
+  // valid mid-piece keysig change glyphs since their first `.measure`
+  // child is a mid-piece measure, not m1. Loop copies all carry their
+  // own m1 chrome and each gets stripped.
+  if (loop) {
+    for (const s of panSvgs) stripHeadersFrom(s);
+  } else {
+    stripHeadersFrom(tile0);
+  }
 
   if (loop) {
     applyLoopSpacing(panSvgs, actualHeaderWidth);

@@ -36,6 +36,20 @@ export const K = {
   /** After the last audio note ends, keep scrolling for this long so the
    *  final note visually walks off the stage. Non-loop only. */
   TAIL_MS: 1800,
+  /** Maximum displayed width (in CSS px) of any single `<svg>` placed in
+   *  the pan. Ravel's continuous-system render comes out at ~37k px which
+   *  — multiplied by devicePixelRatio — exceeds every reasonable GPU's
+   *  max texture dimension (Intel iGPUs: 8192; modern discrete: 16384).
+   *  When the layer can't fit a single texture, browsers fall back to
+   *  CPU rasterization on every transform change, dropping playback to
+   *  ~10 fps. Slicing the SVG along measure boundaries into tiles ≤ this
+   *  width restores per-tile GPU promotion. 4096 is conservative —
+   *  effective 8192 at DPR 2, safe on Intel iGPUs.
+   *
+   *  Loop scores skip slicing (their pan widths never approach this
+   *  threshold and the loop × tile combo would force a more elaborate
+   *  wrap implementation). */
+  MAX_TILE_PX: 4096,
 } as const;
 
 /** Measure contents that are NOT part of the frozen header — removed
