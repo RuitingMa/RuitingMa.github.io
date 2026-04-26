@@ -223,6 +223,16 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
     fill: currentColor;
     stroke: currentColor;
   }
+  /* Pin direct SVG children of the pan to their natural width. Without
+     this, flex-shrink (default 1) collapses them when pan's shrink-to-
+     fit width can't accommodate the sum of all copies/tiles — the pan
+     ends up sized to one child's intrinsic width and the SVGs each
+     squeeze down to ~1/N. That broke loop scores at mount: tile0's
+     bounding rect read ~600px instead of the natural ~1700, throwing
+     `musicWidth` out of sync with the wrap math. */
+  .score-pan > :global(svg) {
+    flex-shrink: 0;
+  }
   /* Pedal markings (Ped. text + the bracket showing range of depression).
      A dense piece like Ravel's Jeux d'eau has hundreds of these, and at
      small stage heights the bracket reads as a foreign trapezoid below
