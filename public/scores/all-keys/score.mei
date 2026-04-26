@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mei xmlns="http://www.music-encoding.org/ns/mei" meiversion="5.0">
+  <meiHead>
+    <fileDesc>
+      <titleStmt><title>All keys (circle of fifths, C-anchor)</title></titleStmt>
+      <pubStmt/>
+    </fileDesc>
+  </meiHead>
+  <music>
+    <body>
+      <mdiv>
+        <score>
+          <scoreDef meter.count="4" meter.unit="4" key.sig="0" midi.bpm="80">
+            <staffGrp>
+              <staffDef n="1" lines="5" clef.shape="G" clef.line="2"/>
+            </staffGrp>
+          </scoreDef>
+          <section>
+            <!-- C major (0 accidentals — m1 has NO .keySig element) -->
+            <measure n="1">
+              <harm place="above" tstamp="1">C</harm>
+              <staff n="1"><layer n="1">
+                <note pname="c" oct="4" dur="4"/>
+                <note pname="e" oct="4" dur="4"/>
+                <note pname="g" oct="4" dur="4"/>
+                <note pname="c" oct="5" dur="4"/>
+              </layer></staff>
+            </measure>
+
+            <scoreDef key.sig="1s"/>
+            <!-- G major (1 sharp) — first insertion into a no-keysig m1 -->
+            <measure n="2">
+              <harm place="above" tstamp="1">G</harm>
+              <staff n="1"><layer n="1">
+                <note pname="g" oct="4" dur="4"/>
+                <note pname="b" oct="4" dur="4"/>
+                <note pname="d" oct="5" dur="4"/>
+                <note pname="g" oct="5" dur="4"/>
+              </layer></staff>
+            </measure>
+
+            <scoreDef key.sig="2s"/>
+            <measure n="3">
+              <harm place="above" tstamp="1">D</harm>
+              <staff n="1"><layer n="1">
+                <note pname="d" oct="4" dur="4"/>
+                <note pname="f" oct="4" dur="4"/>
+                <note pname="a" oct="4" dur="4"/>
+                <note pname="d" oct="5" dur="4"/>
+              </layer></staff>
+            </measure>
+
+            <scoreDef key.sig="3s"/>
+            <measure n="4">
+              <harm place="above" tstamp="1">A</harm>
+              <staff n="1"><layer n="1">
+                <note pname="a" oct="4" dur="4"/>
+                <note pname="c" oct="5" dur="4"/>
+                <note pname="e" oct="5" dur="4"/>
+                <note pname="a" oct="5" dur="4"/>
+              </layer></staff>
+            </measure>
+
+            <scoreDef key.sig="4s"/>
+            <measure n="5">
+              <harm place="above" tstamp="1">E</harm>
+              <staff n="1"><layer n="1">
+                <note pname="e" oct="4" dur="4"/>
+                <note pname="g" oct="4" dur="4"/>
+                <note pname="b" oct="4" dur="4"/>
+                <note pname="e" oct="5" dur="4"/>
+              </layer></staff>
+            </measure>
+
+            <scoreDef key.sig="5s"/>
+            <measure n="6">
+              <harm place="above" tstamp="1">B</harm>
+              <staff n="1"><layer n="1">
+                <note pname="b" oct="4" dur="4"/>
+                <note pname="d" oct="5" dur="4"/>
+                <note pname="f" oct="5" dur="4"/>
+                <note pname="b" oct="5" dur="4"/>
+              </layer></staff>
+            </measure>
+
+            <scoreDef key.sig="6s"/>
+            <measure n="7">
+              <harm place="above" tstamp="1">F#</harm>
+              <staff n="1"><layer n="1">
+                <note pname="f" oct="4" dur="4"/>
+                <note pname="a" oct="4" dur="4"/>
+                <note pname="c" oct="5" dur="4"/>
+                <note pname="f" oct="5" dur="4"/>
+              </layer></staff>
+            </measure>
+
+            <scoreDef key.sig="5f"/>
+            <!-- Db major (5 flats, enharmonic pivot) -->
+            <measure n="8">
+              <harm place="above" tstamp="1">D♭</harm>
+              <staff n="1"><layer n="1">
+                <note pname="d" oct="4" dur="4"/>
+                <note pname="f" oct="4" dur="4"/>
+                <note pname="a" oct="4" dur="4"/>
+                <note pname="d" oct="5" dur="4"/>
+              </layer></staff>
+            </measure>
+
+            <scoreDef key.sig="4f"/>
+            <measure n="9">
+              <harm place="above" tstamp="1">A♭</harm>
+              <staff n="1"><layer n="1">
+                <note pname="a" oct="3" dur="4"/>
+                <note pname="c" oct="4" dur="4"/>
+                <note pname="e" oct="4" dur="4"/>
+                <note pname="a" oct="4" dur="4"/>
+              </layer></staff>
+            </measure>
+
+            <scoreDef key.sig="3f"/>
+            <measure n="10">
+              <harm place="above" tstamp="1">E♭</harm>
+              <staff n="1"><layer n="1">
+                <note pname="e" oct="4" dur="4"/>
+                <note pname="g" oct="4" dur="4"/>
+                <note pname="b" oct="4" dur="4"/>
+                <note pname="e" oct="5" dur="4"/>
+              </layer></staff>
+            </measure>
+
+            <scoreDef key.sig="2f"/>
+            <measure n="11">
+              <harm place="above" tstamp="1">B♭</harm>
+              <staff n="1"><layer n="1">
+                <note pname="b" oct="3" dur="4"/>
+                <note pname="d" oct="4" dur="4"/>
+                <note pname="f" oct="4" dur="4"/>
+                <note pname="b" oct="4" dur="4"/>
+              </layer></staff>
+            </measure>
+
+            <scoreDef key.sig="1f"/>
+            <measure n="12">
+              <harm place="above" tstamp="1">F</harm>
+              <staff n="1"><layer n="1">
+                <note pname="f" oct="4" dur="4"/>
+                <note pname="a" oct="4" dur="4"/>
+                <note pname="c" oct="5" dur="4"/>
+                <note pname="f" oct="5" dur="4"/>
+              </layer></staff>
+            </measure>
+
+            <scoreDef key.sig="0"/>
+            <!-- C major (back to 0 — should REMOVE keysig from shell) -->
+            <measure n="13">
+              <harm place="above" tstamp="1">C</harm>
+              <staff n="1"><layer n="1">
+                <note pname="c" oct="4" dur="4"/>
+                <note pname="e" oct="4" dur="4"/>
+                <note pname="g" oct="4" dur="4"/>
+                <note pname="c" oct="5" dur="4"/>
+              </layer></staff>
+            </measure>
+          </section>
+        </score>
+      </mdiv>
+    </body>
+  </music>
+</mei>

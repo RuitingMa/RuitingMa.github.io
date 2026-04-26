@@ -34,3 +34,13 @@ import Score from '../../components/Score.astro';
 - Stage 高度需要明显加大（这里传了 `height={420}`，原默认 200px 装不下）
 - Frozen overlay 现在仍只显示 treble clef + 调号 + 拍号，bass clef 还没纳入
 - 多谱表的 mid-piece tempo overlay 因 MusicXML→MEI 转换的 `<tempo>` 出现位置（多个/staff/lang 分布），目前我们的 extractor 只接 hand-written 形态——overlay 暂不出现，但 SVG 内的 tempo 字形和音频节奏都对
+
+---
+
+## 三、12 调循环（升降号宽度压力测试）
+
+五度圈走一周：C → G → D → A → E → B → F# → D♭ → A♭ → E♭ → B♭ → F。每个 measure 一个 key，升降号从 0 累到 6 再倒过来回到 1。盯着 frozen overlay 的 keysig 字形宽度——它会随 sharps/flats 数量推开 meter 字形。
+
+<Score slug="all-keys" />
+
+每条 keysig change 现在都从 pan 里那一刻 measure 的 `.keySig` glyph 克隆 + 套一层 translate 锚回 m1 的位置——overlay 不会再忽大忽小，meter 字形也不会窜到 system 中段去。
