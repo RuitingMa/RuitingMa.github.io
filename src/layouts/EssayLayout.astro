@@ -170,8 +170,27 @@ const tintClass = tint ? `tint-${tint}` : '';
     margin: 0 0 3em;
   }
 
-  /* Markdown renders each <section> we declared; apply spacing globally
-     because the author wrote raw HTML inside their .md file. */
+  /* === Section spacing convention =============================
+     Shared by every essay collection entry regardless of `kind`
+     (NOTE or ESSAY) — both flavors route through this layout, so
+     whatever rules land here apply uniformly.
+
+     Authoring: wrap each beat of the piece in
+       <section data-cue="NAME">…</section>
+     inline in the .md/.mdx file. The :global selector lets these
+     reach raw HTML children. `data-cue` separately drives stage-side
+     visual transitions (see the <script> block above) — the cue name
+     is content-side metadata for the sketch, not a styling hook.
+
+     What you get for free by following the convention:
+       • 72vh minimum height per section, flex-centered content
+       • 1px rule between adjacent sections
+       • Reading-line tracking so the stage canvas can react per beat
+       • Generous trailing quiet under the last section
+
+     A piece that opts out (just markdown headings, no <section>) is
+     fine; it just gets standard prose flow without the per-beat
+     pacing. The dev-only Score 组件测试页 is the current opt-out. */
   .body :global(section) {
     min-height: 72vh;
     padding: 1.6em 0 2.2em;
