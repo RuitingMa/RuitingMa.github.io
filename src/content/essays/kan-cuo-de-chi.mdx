@@ -1,0 +1,125 @@
+---
+title: 看错的尺
+date: "2026-05-04"
+kind: ESSAY
+summary: 做这个谱子组件，撞到几面看似无关的墙——后来发现每一面的形状都一样：第一直觉的尺子量不出真正想测的东西。
+tint: rust
+---
+
+import Score from '../../components/Score.astro';
+
+{/*
+  起草大纲（按 cue 顺序）—— 几个工程难题，按"形状"排列。
+  整篇的脊梁是：每一节都是「我以为对的单位 → 实际该用的单位」的故事。
+  这个一致性比任何单一的难题都更值得说出来。
+
+  opener     — 引：写组件时撞到的几面墙，一开始看起来八竿子打不着——
+               一个是 SVG 的 viewBox，一个是 GPU 纹理上限，一个是 MEI
+               的元数据，一个是 SMuFL 的字形编码。后来发现它们形状是
+               一样的：每次都是我第一次挑的尺子，量的不是真正想测的东西。
+
+  ruler      — 谁来当尺：staff body，不是 bbox。
+               一开始 SVG 用 `height: 100%` 撑舞台。Verovio 的 bbox
+               包含上下所有装饰（ledger、dynamics、harm、slurs），所以
+               装饰多的曲子 staff 反而被挤扁——视觉权重在曲子之间漂移。
+               真正该量的是 staff body 的 5 线像素跨度。
+               解：先用 200px 临时舞台量第一条 staff 的 5 线，再算
+               比例反推 `--score-h`。多谱表自然变高，不需要额外补偿。
+
+  ceiling    — 谁先撞到天花板：纹理上限，不是带宽。
+               Ravel 全曲 SVG 宽 37,000 像素。Intel 集成显卡单纹理上限
+               8,192px；现代独显 16,384px。超过 → 浏览器掉到 CPU 光栅化
+               → 每一帧拖累整页 → ~10fps。
+               不是网络不够、不是 SVG 太复杂；是那个东西塞不进一张 GPU
+               纹理里。
+               解：沿小节切 tile，每片 ≤4096px，外层 viewBox 做 crop，
+               内层 `definition-scale` viewBox 不动。每片各自上 GPU。
+
+  source     — 信哪个真理源：渲染结果，不是 MEI 元数据。
+               冻结报头在切换 clef/keysig/meter 时，本来想从 MEI 元数据
+               推：解析 `<clef>` 的 shape 和 line，组合签名，用作 dedup
+               key。结果发现 MEI 里 `clef sameas`、courtesy clef 引用、
+               octave displacement、cancel naturals 全是边界情况，每补
+               一个就漏一个。
+               改向下游真理找：把 Verovio 渲染出来的 `<g class="clef">`
+               里的 `<use xlink:href>` 列表（剥掉 cancel naturals 后）
+               作为视觉签名。同样的字形组合 → 同样的签名 → dedup。
+               同时把 (谱表 × clef/keysig/meter) 拆成独立 track，每个
+               独自 binary-search + opacity crossfade，钢琴上层换谱号
+               下层不闪。
+
+  glyph      — 真理源也有边界：SMuFL 大小变体的小坑。
+               即便信渲染结果，Verovio 给 mid-piece 的是 SMuFL "clef
+               change" 小变体（E07A/E07B/E07C），高度只有正版的 ~70%。
+               克隆到 chrome overlay 里就看到谱号每次跨 mid-piece 切换
+               都缩一圈。
+               解：三键映射（E07A→E050, E07B→E05C, E07C→E062），SMuFL
+               规范保证小写大写共享 reference point，所以替换后五线对位
+               不变。
+               这一节是上一节的小注脚——「视觉签名」作为真理源也有它
+               自己的边界，需要再向下走一步看到字形编码层。
+
+  clocks     — 时间也是一把容易看错的尺：rAF 不等于 AudioContext。
+               播放头要走得准，音符要响得准，两边对的是同一个时间——
+               但它们用的不是同一只钟。视觉走 rAF（屏幕刷新率），声音
+               走 AudioContext（硬件采样钟），两只会缓慢漂移。
+               另一个具体的版本：MEI 的 `<tempo>` tstamp 在小节起点，
+               glyph 在小节中段才出现。按 tstamp 触发 overlay 切换 →
+               文字在还没到播放头时就换，几百 ms 的滞后。
+               解：retiming——算 glyph 的实际 x 位置，反推它过播放头
+               的那一刻的 ms，用那个 ms 触发切换。
+
+  recap      — 这些之后留下的不是技术总结，是一种习惯：先怀疑自己
+               用的尺。直到把"我以为在测什么"和"我实际在测什么"对
+               齐了，所有后续修补都是在错的层面打补丁。
+*/}
+
+<section data-cue="opener">
+
+{/* TODO: 引。每个难题的形状都一样：第一直觉的单位错了。 */}
+
+</section>
+
+<section data-cue="ruler">
+
+{/* TODO: staff-anchor 缩放。bbox 不是合理的尺。 */}
+
+<Score slug="jeux-deau-ravel" />
+
+</section>
+
+<section data-cue="ceiling">
+
+{/* TODO: GPU tile 切片。37k 像素 vs 8,192 上限。 */}
+
+</section>
+
+<section data-cue="source">
+
+{/* TODO: per-axis chrome + visual signature dedup。 */}
+
+<Score slug="all-keys" />
+
+</section>
+
+<section data-cue="glyph">
+
+{/* TODO: small→full 谱号映射。SMuFL E07A→E050。 */}
+
+<Score slug="chaos" />
+
+</section>
+
+<section data-cue="clocks">
+
+{/* TODO: rAF 钟 vs AudioContext 钟，tempo overlay retiming。 */}
+
+<Score slug="jeux-deau" />
+
+</section>
+
+<section data-cue="recap">
+
+{/* TODO: 收。先怀疑自己用的尺。 */}
+
+</section>

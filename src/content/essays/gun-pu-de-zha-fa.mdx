@@ -2,73 +2,89 @@
 title: 滚谱的扎法
 date: "2026-05-04"
 kind: ESSAY
-summary: 从 MEI 到一个能在网页里横向滚动、声音同步的乐谱组件。
+summary: 一份能在网页里横向滚动、声音同步的乐谱组件，从 MEI 到 DOM 怎么一步步扎起来的。
 tint: dune
 ---
 
 import Score from '../../components/Score.astro';
 
 {/*
-  起草大纲（按 cue 顺序）：
+  起草大纲（按 cue 顺序）—— 全流程组件思路。
+  这篇是「形状」的故事，不是「难题」的故事；难题留给《看错的尺》。
 
-  why-mei         — MEI / MusicXML 是什么。为什么不画 PNG。
-                    Verovio 把 MEI 渲到 SVG 是个起点，但只是起点。
-  one-system      — `breaks: 'none'` 把一首曲子排成一整条横向系统。
-                    天然给"横向滚动"提供了画布。
-                    `pageWidth: 100000, adjustPageHeight: true`。
-  staff-anchor    — viewBox 的坑：bbox 含装饰，装饰多 → staff 被压扁。
-                    解：以 staff body 为锚反推舞台高度（measure 一次，
-                    重设 --score-h，回流，继续）。
-                    本博客的 staffHeight = 40 默认。
-  tile            — Ravel 全曲 SVG 宽 ~37k px，撞 GPU 单纹理上限。
-                    沿小节切 tile（≤4096px），每片自己一个 viewBox
-                    crop，外层 GPU 各管各的。
-  anchors         — 把每个音符的 onset ms 映射到屏幕 x。线性插值 +
-                    游标缓存（O(1) 稳态）。msAtX/xAtMs 双向。
-  loop            — 多份 SVG 副本贴边铺开 + 幻影前导 tile。看到的
-                    seam 都是设计过的。
-  recap           — 整套架构是写给一个人的：作者读自己的谱子的时候
-                    不应该被装饰量影响视觉权重，不应该被 GPU 限制
-                    打到 10fps，不应该听一段需要按 5 个键。
+  empty      — 起。把谱子嵌进文章不是新事，但「能跟着读、能听一段、能拖
+               一格」的谱子是。一句话引出 MEI / MusicXML / Verovio。这篇讲
+               的不是怎么把音符画出来——讲的是怎么把它扎成一个组件。
+
+  strip      — 整套架构的地基：`breaks: 'none'` + 巨大 pageWidth +
+               adjustPageHeight。一句 setOption 决定后面的一切：曲子
+               摊成一条横向的带子。如果分页了，所有后续逻辑都不一样。
+
+  pipeline   — MEI → Verovio → SVG → DOM 注入。每一段的职责。
+               静态的（曲子结构、装饰、调号变化）一次性烧进 SVG；
+               动态的（播放头位置、tempo overlay 切换）由运行时处理。
+               所以渲染发生一次，播放发生千次。
+
+  layers     — 舞台里的几层叠在一起，互不干扰：
+                 pan         — Verovio 出的 SVG，每帧靠 translate3d 平移
+                 staff-lines — 单独画 5 条横线，单一来源避免双笔加粗
+                 chrome      — 「冻结的报头」(clef/keysig/meter)，假装不动
+                 playhead    — 一根固定的竖线
+                 hint        — "click to play"
+               这是为什么 chrome 能假装不动而 pan 在动——它们物理上分层。
+
+  lifecycle  — 不一上来就挂。IntersectionObserver 等到滚到视口附近才
+               让 Verovio 醒来；离开页面（astro:before-swap）拆得干净。
+               WASM 是大件，缓存（in-memory + IndexedDB）让重访免重渲。
+
+  ticking    — 演奏时两只钟一起转：
+                 视觉钟 (rAF)        ——  从音频钟读 ms → 锚点查 x →
+                                        translate3d 设位置
+                 音频钟 (AudioContext) —— 100ms tick + 250ms lookahead
+                                        独立排音符，一个游标记到哪了
+               两只钟在同一首曲子上跳同一支舞，谁也不主导。
+
+  recap      — 整套的形：一条带子 + 几层平行的 view + 一只眼盯着时间。
+               这是写给「一个人想看自己谱子」的，不是「任何人想用一个
+               通用乐谱播放器」的——所以它的边界设得很死，但里面的每
+               一处都是为这一个用例选的。
 */}
 
-<section data-cue="why-mei">
+<section data-cue="empty">
 
-{/* TODO: MEI/MusicXML 简介，Verovio 是什么。 */}
+{/* TODO: 起。MEI/MusicXML/Verovio 一句带过；这篇讲的是组件。 */}
 
 </section>
 
-<section data-cue="one-system">
+<section data-cue="strip">
 
-{/* TODO: `breaks: 'none'` 的决定 */}
+{/* TODO: `breaks:'none'` 决定一切。一句 setOption 选择了所有后续。 */}
 
 <Score slug="jeux-deau" />
 
 </section>
 
-<section data-cue="staff-anchor">
+<section data-cue="pipeline">
 
-{/* TODO: viewBox 含装饰的问题 + staff-anchor 的解。 */}
-
-</section>
-
-<section data-cue="tile">
-
-{/* TODO: GPU 纹理上限 + tile 切片。 */}
-
-<Score slug="jeux-deau-ravel" />
+{/* TODO: MEI → Verovio → SVG → DOM 的三步走。一次性烧 vs 运行时。 */}
 
 </section>
 
-<section data-cue="anchors">
+<section data-cue="layers">
 
-{/* TODO: msAtX/xAtMs，游标缓存。 */}
+{/* TODO: pan / chrome / staff-lines / playhead / hint 各管各。 */}
 
 </section>
 
-<section data-cue="loop">
+<section data-cue="lifecycle">
 
-{/* TODO: 多副本 + 幻影 leader 的实现。 */}
+{/* TODO: IntersectionObserver 挂载、astro:before-swap 拆除、缓存。 */}
+
+</section>
+
+<section data-cue="ticking">
+
+{/* TODO: rAF 钟 + AudioContext 钟。两只钟同跳一支舞。 */}
 
 <Score slug="jeux-deau" loop />
 
@@ -76,6 +92,6 @@ import Score from '../../components/Score.astro';
 
 <section data-cue="recap">
 
-{/* TODO: 收。整套是为读自己的谱子写的。 */}
+{/* TODO: 收。整套是为一个人读自己谱子写的。 */}
 
 </section>
