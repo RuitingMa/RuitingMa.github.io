@@ -8,57 +8,25 @@ tint: dune
 
 import Score from '../../components/Score.astro';
 
-{/*
-  起草大纲（按 cue 顺序）—— 全流程组件思路。
-  这篇是「形状」的故事，不是「难题」的故事；难题留给《看错的尺》。
-
-  empty      — 起。把谱子嵌进文章不是新事，但「能跟着读、能听一段、能拖
-               一格」的谱子是。一句话引出 MEI / MusicXML / Verovio。这篇讲
-               的不是怎么把音符画出来——讲的是怎么把它扎成一个组件。
-
-  strip      — 整套架构的地基：`breaks: 'none'` + 巨大 pageWidth +
-               adjustPageHeight。一句 setOption 决定后面的一切：曲子
-               摊成一条横向的带子。如果分页了，所有后续逻辑都不一样。
-
-  pipeline   — MEI → Verovio → SVG → DOM 注入。每一段的职责。
-               静态的（曲子结构、装饰、调号变化）一次性烧进 SVG；
-               动态的（播放头位置、tempo overlay 切换）由运行时处理。
-               所以渲染发生一次，播放发生千次。
-
-  layers     — 舞台里的几层叠在一起，互不干扰：
-                 pan         — Verovio 出的 SVG，每帧靠 translate3d 平移
-                 staff-lines — 单独画 5 条横线，单一来源避免双笔加粗
-                 chrome      — 「冻结的报头」(clef/keysig/meter)，假装不动
-                 playhead    — 一根固定的竖线
-                 hint        — "click to play"
-               这是为什么 chrome 能假装不动而 pan 在动——它们物理上分层。
-
-  lifecycle  — 不一上来就挂。IntersectionObserver 等到滚到视口附近才
-               让 Verovio 醒来；离开页面（astro:before-swap）拆得干净。
-               WASM 是大件，缓存（in-memory + IndexedDB）让重访免重渲。
-
-  ticking    — 演奏时两只钟一起转：
-                 视觉钟 (rAF)        ——  从音频钟读 ms → 锚点查 x →
-                                        translate3d 设位置
-                 音频钟 (AudioContext) —— 100ms tick + 250ms lookahead
-                                        独立排音符，一个游标记到哪了
-               两只钟在同一首曲子上跳同一支舞，谁也不主导。
-
-  recap      — 整套的形：一条带子 + 几层平行的 view + 一只眼盯着时间。
-               这是写给「一个人想看自己谱子」的，不是「任何人想用一个
-               通用乐谱播放器」的——所以它的边界设得很死，但里面的每
-               一处都是为这一个用例选的。
-*/}
-
 <section data-cue="empty">
 
-{/* TODO: 起。MEI/MusicXML/Verovio 一句带过；这篇讲的是组件。 */}
+把谱子嵌进文章不是新事。PDF 截图、MuseScore embed、各种笨重的方块插在文字之间，你看，或者不看。
+
+我想要的是另一种：能跟着读的谱子。播放头沿五线谱往前走时，谱面在眼前横着翻过去；想停就停，想拖回去也行；声音同时响——不为演奏，是为了让你"知道这一段听起来是怎么样"。32 分音符密到眼睛跟不上时，耳朵补眼睛。
+
+画这一步早就解过了。MEI 和 MusicXML 是写谱面的两种 XML 方言，Verovio 是个把它们渲到 SVG 的 WASM 工具包；解得比我能解的好。这篇讲的不是怎么画出音符——讲的是怎么把那块 SVG 扎成一个**组件**：有舞台，有状态，有生命周期，有自己的钟，能跟 SPA 路由协调着活。
 
 </section>
 
 <section data-cue="strip">
 
-{/* TODO: `breaks:'none'` 决定一切。一句 setOption 选择了所有后续。 */}
+整套架构的地基是一句 setOption。
+
+Verovio 渲谱面默认按 A4 / Letter 分页，超出一行换行，超出一页开新页。我把页宽设成 100,000，把 `breaks` 设成 `'none'`——它再也不分页。整首曲子摊成一条横向的带子，一直延展到自然 bbox 那么宽。Ravel 全曲就是这样一条 ~37,000 像素长的带子。
+
+之后所有事都从这一句来。播放头能立得住，是因为整首曲子在水平方向是连续的；横向滚动的 translate3d 才有意义；切片才有切处；循环才能首尾相接。如果是分页布局，每一段逻辑——锚点、播放头、tile、loop wrap——都得另写一遍。
+
+一句 setOption 决定的不是排版，是这个组件存在的形式。
 
 <Score slug="jeux-deau" />
 
@@ -66,25 +34,51 @@ import Score from '../../components/Score.astro';
 
 <section data-cue="pipeline">
 
-{/* TODO: MEI → Verovio → SVG → DOM 的三步走。一次性烧 vs 运行时。 */}
+谱子从 MEI 文件变成能滚的乐谱，要走三步。
+
+第一步：Verovio 把 MEI 渲成 SVG。这是最贵的一步——慢曲子在 Web Worker 里要 5 到 15 秒，所以渲完缓存到 IndexedDB；再访问就不重渲。出来的 SVG 里包含曲子全部的"静态形状"：每个音符的位置、调号、谱号、装饰、连音线、踏板标记——一切不随播放变化的东西。
+
+第二步：把这块 SVG 注入 DOM。贴进 `.score-pan` 容器里；另起一块 SVG 单独画 5 条横线作为 staff lines；frozen header（谱号 / 调号 / 拍号）也是另一块 SVG，从渲染结果里克隆出来。pan 里那大块自此不再变化——所有"动"都发生在它之外。
+
+第三步是运行时：rAF 每帧读一次音频钟，把 pan 平移到对应的 x 位置；音频调度器独立排音符；播放头始终钉在屏幕同一个像素上。
+
+渲染发生一次，播放发生千次。
 
 </section>
 
 <section data-cue="layers">
 
-{/* TODO: pan / chrome / staff-lines / playhead / hint 各管各。 */}
+舞台不是一块，是好几块叠在一起的。
+
+最底是 staff lines 那一层——5 条横线，单独画，单一来源。中间是 pan，盛着 Verovio 出的整块 SVG，每一帧靠 translate3d 横向平移。pan 上面盖一层 frozen header，也就是"假装不动"的谱号区域；它确实不动——pan 在它下面滑过而它本身物理上在另一个 DOM 节点里，永远固定在最左边。最上面是播放头那根竖线，加上"click to play"的提示文字。
+
+这样分层是有理由的。让 pan 的同一块 SVG 同时承担"流动的音符"和"固定的报头"，每次跨过谱号变化时——克隆的报头要跟着 pan 平移、再用 transform 抵消平移、再交叉淡入淡出——又复杂又容易抖。物理分层之后，pan 滚 pan 的，header 替 header 的，每一层只对自己的事情负责。
+
+谁先画、谁压在谁上、谁有 mask、谁有 backdrop-filter，都是 z-index + position 的常规活。但前提是它们必须先分层。
 
 </section>
 
 <section data-cue="lifecycle">
 
-{/* TODO: IntersectionObserver 挂载、astro:before-swap 拆除、缓存。 */}
+不是一进页面就把 Verovio 醒过来。
+
+WASM 是大件，一首曲子可能有几千个音符要解析、几万个 SVG 节点要渲染——主线程容易卡。所以 IntersectionObserver 监视每个 Score 容器，等它滚到视口附近 200 像素再开始 fetch + render。一页放几个 Score 也好，看不到的那些就不醒。
+
+Astro 的 ClientRouter 切页面时会发 `astro:before-swap`。正在播的暂停，正在跑的 rAF 取消，listeners 摘除，AudioContext 关。新页面挂上自己的 score 实例，老实例的清理早就执行过了。SPA 切换像翻页，谱子也跟着翻干净。
+
+缓存分两层：内存 LRU 装最近 12 个，IndexedDB 装持久化（schema 版本化，schema 改一次旧的全清）。访问过的曲子下次再来——直接绕过那 5–15 秒的二度渲染，瞬间出图。
 
 </section>
 
 <section data-cue="ticking">
 
-{/* TODO: rAF 钟 + AudioContext 钟。两只钟同跳一支舞。 */}
+演奏的时候，组件里有两只钟。
+
+视觉走 rAF。每一帧从音频钟读当前 ms，去 anchors 表里查这一刻播放头该在哪个像素，算出 pan 该平移多少，写 translate3d。这只钟跑屏幕刷新率，60Hz、120Hz 都行——但它不是音频时钟。浏览器 rAF 偶尔会跳帧，切到后台 tab 还会停。
+
+声音走 AudioContext。音频调度器每 100ms 醒一次，往前看 250ms，把这段时间窗里还没排进去的音符全 schedule 出去；一个 cursor 记着排到哪了，下次接着往后排。这只钟是硬件采样钟——独立于显示线程，准且稳。
+
+两只钟之间没有谁同步谁。视觉钟问音频钟现在几点，但不试图改它；音频钟自顾自往前走，音符甚至已经排到 250ms 之后了。它们在同一首曲子上跳同一支舞——一只看着对方的脚步，但谁也不主导。
 
 <Score slug="jeux-deau" loop />
 
@@ -92,6 +86,14 @@ import Score from '../../components/Score.astro';
 
 <section data-cue="recap">
 
-{/* TODO: 收。整套是为一个人读自己谱子写的。 */}
+整套的形是这样的：
+
+一条横向的带子。
+几层平行的 view，互不干扰。
+两只钟在同一首曲子上各跑各的。
+
+写这个组件不是为了做通用乐谱播放器。它是为了让"一个人想看自己手写的几小节"这件事舒服一点。所以每一处选择都很死：单一系统、固定播放头位置、目标 staff 高度由作者指定、循环只为短句反复倾听。任何超出这个用例的事，组件都不擅长。
+
+但也正因为边界这么死，里面每一处选择才能彼此咬合。`breaks: 'none'` 让横向滚动有意义，分层让 chrome 假装不动，rAF + AudioContext 的双钟让看和听各自准。每一块都是为这一个用例选的——所以它们能扎得这么紧。
 
 </section>
