@@ -4,7 +4,7 @@ import EssayLayout from '../../layouts/EssayLayout.astro';
 import BeginSketch from '../../components/BeginSketch.astro';
 
 export async function getStaticPaths() {
-  const essays = await getCollection('essays');
+  const essays = await getCollection('essays', (e) => import.meta.env.DEV || !e.data.draft);
   return essays.map((entry) => ({
     params: { slug: entry.id },
     props: { entry },

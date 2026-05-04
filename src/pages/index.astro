@@ -2,17 +2,15 @@
 import BaseLayout from '../layouts/BaseLayout.astro';
 import LobbySketch from '../components/LobbySketch.astro';
 import { getCollection } from 'astro:content';
+import { SKETCHES } from '../lib/sketches';
 
 // Sketches remain hand-authored .astro pages (their layouts are bespoke,
-// so a shared template fights them). Listed here by hand — it's 3 entries.
-const sketches = [
-  { href: '/sketches/clinamen/',    title: 'Clinamen',   date: '2026-04-20', kind: 'AUDIO · GENERATIVE', summary: '河灯散布于水面。' },
-  { href: '/sketches/smoke/',       title: 'Smoke',      date: '2026-04-19', kind: 'GENERATIVE',         summary: '烟。' },
-  { href: '/sketches/hello-world/', title: 'Flow Field', date: '2026-04-18', kind: 'GENERATIVE',         summary: '漂流点阵。' },
-];
+// so a shared template fights them). The registry lives in src/lib/sketches.ts
+// so each sketch page can import `isDraft` and gate itself in PROD.
+const sketches = SKETCHES.filter((s) => import.meta.env.DEV || !s.draft);
 
 // Long-form essays come from the content collection.
-const essayEntries = await getCollection('essays');
+const essayEntries = await getCollection('essays', (e) => import.meta.env.DEV || !e.data.draft);
 const essays = essayEntries.map((e) => ({
   href: `/essays/${e.id}/`,
   title: e.data.title,

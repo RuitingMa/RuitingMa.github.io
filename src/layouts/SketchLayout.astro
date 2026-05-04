@@ -1,0 +1,149 @@
+---
+/*
+ * SketchLayout — sticky-stage piece with short prose. Sibling to
+ * EssayLayout but for hand-authored canvas/WebGL pages.
+ *
+ * Pulls metadata from the SKETCHES registry in src/lib/sketches.ts via
+ * the `slug` prop, so each sketch page only declares which sketch it
+ * is. The page is responsible for slotting in its own stage component
+ * (since each one is bespoke) and writing the prose.
+ *
+ * Body styling: bare <p> is a "lead" paragraph (full ink), <p.note> is
+ * the dimmer secondary tone — same convention each sketch page used
+ * before centralization. <code>, <em>, and <span.cue> are styled too.
+ *
+ * Drafts: marked via `draft: true` in the registry. The PROD redirect
+ * lives in each page's frontmatter (Astro 6 doesn't propagate
+ * `Astro.redirect` from a child layout up to the page-level Response,
+ * so the guard has to sit on the page itself — see each
+ * src/pages/sketches/*.astro).
+ *
+ * Animation indices: this layout consumes --i 0/1/2 for breadcrumb,
+ * h1, and meta. Page body should start at --i: 3.
+ */
+import BaseLayout from './BaseLayout.astro';
+import { getSketch } from '../lib/sketches';
+
+interface Props {
+  slug: string;
+  /** Override portrait stage height for canvases that want more room. */
+  stageHeightMobile?: string;
+}
+
+const { slug, stageHeightMobile } = Astro.props;
+
+const entry = getSketch(slug);
+if (!entry) {
+  throw new Error(
+    `SketchLayout: unknown slug "${slug}". Add it to src/lib/sketches.ts.`,
+  );
+}
+
+const { title, date, kind, tint } = entry;
+const tintClass = tint ? `tint-${tint}` : '';
+---
+
+<BaseLayout title={title} stageHeightMobile={stageHeightMobile}>
+  <slot name="stage" slot="stage" />
+
+  <article class:list={[tintClass]}>
+    <p class="breadcrumb enter" style="--i: 0;">
+      <a href="/" class="writ">← 眠海</a>
+    </p>
+
+    <h1 class="enter" style="--i: 1;">{title}</h1>
+    <p class="meta enter" style="--i: 2;">{date} · {kind}</p>
+
+    <div class="body"><slot /></div>
+  </article>
+</BaseLayout>
+
+<style>
+  .breadcrumb {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.25em;
+    opacity: 0.55;
+    font-size: 0.72rem;
+    margin: 0 0 4em;
+  }
+  .breadcrumb a { text-decoration: none; }
+  .breadcrumb a:hover { color: var(--accent); }
+
+  h1 {
+    font-family: var(--font-display);
+    font-size: 2.1rem;
+    font-weight: 400;
+    letter-spacing: 0.05em;
+    margin: 0 0 0.5em;
+    position: relative;
+    padding-left: 0.7em;
+    line-height: 1.25;
+  }
+  h1::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0.18em;
+    bottom: 0.22em;
+    width: 3px;
+    background: var(--accent);
+  }
+
+  .meta {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.25em;
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+    margin: 0 0 3em;
+  }
+
+  /* Body slot — :global so the page's plain <p>, <p.note>, <code> etc.
+     get styled even though they live in a different scope. */
+  .body :global(p) {
+    margin: 1em 0;
+  }
+  .body :global(p.note) {
+    color: var(--fg-dim);
+    font-size: 0.92rem;
+  }
+  .body :global(p.note + p.note) {
+    margin-top: 1.1em;
+  }
+  .body :global(em) {
+    font-style: italic;
+    color: var(--fg);
+  }
+  .body :global(strong) {
+    font-weight: 500;
+    color: var(--fg);
+  }
+  .body :global(code) {
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    padding: 0.1em 0.35em;
+    background: rgba(230, 226, 214, 0.08);
+    border-radius: 2px;
+  }
+  .body :global(.cue) {
+    font-family: var(--font-mono);
+    font-size: 0.82em;
+    letter-spacing: 0.08em;
+    padding: 0.14em 0.5em;
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    color: var(--accent);
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+  .body :global(a.writ) {
+    color: inherit;
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--accent) 55%, transparent);
+    text-underline-offset: 0.2em;
+  }
+  .body :global(a.writ:hover) {
+    color: var(--accent);
+  }
+</style>
