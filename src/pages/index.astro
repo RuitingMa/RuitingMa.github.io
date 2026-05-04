@@ -7,7 +7,11 @@ import { SKETCHES } from '../lib/sketches';
 // Sketches remain hand-authored .astro pages (their layouts are bespoke,
 // so a shared template fights them). The registry lives in src/lib/sketches.ts
 // so each sketch page can import `isDraft` and gate itself in PROD.
-const sketches = SKETCHES.filter((s) => import.meta.env.DEV || s.published);
+// `draft` is uniform with the essay shape below so the listing template
+// can render the "草稿" marker without caring which collection it came from.
+const sketches = SKETCHES
+  .filter((s) => import.meta.env.DEV || s.published)
+  .map((s) => ({ ...s, draft: !s.published }));
 
 // Long-form essays come from the content collection.
 const essayEntries = await getCollection('essays', (e) => import.meta.env.DEV || e.data.published);
@@ -17,6 +21,7 @@ const essays = essayEntries.map((e) => ({
   date: e.data.date,
   kind: e.data.kind,
   summary: e.data.summary,
+  draft: !e.data.published,
 }));
 
 // Date desc, tie-break by href so order is deterministic. Essays sort
@@ -38,14 +43,14 @@ const entries = [...sketches, ...essays].sort((a, b) => {
 
     <ul class="sketches">
       {entries.map((s, idx) => (
-        <li class="enter" style={`--i: ${idx + 2};`}>
+        <li class:list={['enter', { 'is-draft': s.draft }]} style={`--i: ${idx + 2};`}>
           <a href={s.href} data-heat-trigger>
             <div class="row">
               <span class="title">{s.title}</span>
               <span class="date">{s.date}</span>
             </div>
             <p class="summary">{s.summary}</p>
-            <span class="kind">— {s.kind}</span>
+            <span class="kind">— {s.kind}{s.draft && <span class="draft-tag"> · 草稿</span>}</span>
           </a>
         </li>
       ))}
@@ -142,5 +147,21 @@ const entries = [...sketches, ...essays].sort((a, b) => {
     letter-spacing: 0.25em;
     font-size: 0.65rem;
     color: var(--accent);
+  }
+  /* Draft entries appear only in dev (PROD filters them out). The marker
+     sits on the kind line — same scale as the rest of the meta so it
+     doesn't shout — and the row anchor dims slightly so a quick scan
+     can tell drafts and shipped pieces apart at a glance. The dim is on
+     the <a>, not the <li>, because the <li>'s `.enter` keyframe pins
+     opacity = 1 with animation-fill-mode: both. */
+  ul.sketches li.is-draft a {
+    opacity: 0.55;
+    transition: opacity 200ms ease;
+  }
+  ul.sketches li.is-draft a:hover {
+    opacity: 1;
+  }
+  .draft-tag {
+    color: var(--muted);
   }
 </style>
