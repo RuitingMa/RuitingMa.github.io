@@ -5,6 +5,7 @@ kind: NOTE
 summary: 关于注视、追光，以及阅读位置。
 tint: moss
 stage: begin
+published: true
 ---
 
 <section data-cue="empty">

@@ -7,10 +7,10 @@ import { SKETCHES } from '../lib/sketches';
 // Sketches remain hand-authored .astro pages (their layouts are bespoke,
 // so a shared template fights them). The registry lives in src/lib/sketches.ts
 // so each sketch page can import `isDraft` and gate itself in PROD.
-const sketches = SKETCHES.filter((s) => import.meta.env.DEV || !s.draft);
+const sketches = SKETCHES.filter((s) => import.meta.env.DEV || s.published);
 
 // Long-form essays come from the content collection.
-const essayEntries = await getCollection('essays', (e) => import.meta.env.DEV || !e.data.draft);
+const essayEntries = await getCollection('essays', (e) => import.meta.env.DEV || e.data.published);
 const essays = essayEntries.map((e) => ({
   href: `/essays/${e.id}/`,
   title: e.data.title,

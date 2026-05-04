@@ -19,8 +19,9 @@ const essays = defineCollection({
     // Name of a stage component in the STAGES registry inside
     // src/pages/essays/[...slug].astro. Omit for a prose-only essay.
     stage: z.string().optional(),
-    // Hide from the listing and skip building in PROD. Dev still renders.
-    draft: z.boolean().default(false),
+    // Publish-by-opt-in: every essay starts as a draft (hidden in PROD,
+    // dev still renders). Set `published: true` to ship.
+    published: z.boolean().default(false),
   }),
 });
 
