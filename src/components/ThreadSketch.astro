@@ -71,8 +71,12 @@
     }
     const slots: Slot[] = Array.from({ length: SLOTS }, () => ({
       phase: Math.random() * Math.PI * 2,
-      freqMult: 0.85 + Math.random() * 0.3,
-      ampMult: 0.85 + Math.random() * 0.3,
+      // Wider range than feels natural for a single thread because the
+      // empty cue stacks several slots at the SAME y — without per-slot
+      // variation they'd alias into one fat smear instead of reading as
+      // a cluster of distinct threads.
+      freqMult: 0.55 + Math.random() * 1.0,   // 0.55 .. 1.55
+      ampMult: 0.65 + Math.random() * 0.7,    // 0.65 .. 1.35
     }));
 
     // A preset is "what target state a cue maps to". yNorm is normalized
@@ -85,52 +89,70 @@
       zoned: number;          // 0..1 — strength of 3-zone gradient
       pulses: number;         // 0..2 — number of sweep bars
       lifecycleMask: number;  // 0..1 — strength of traveling window
+      dottedAmount: number;   // 0..1 — render DOTTED_SLOT as dots + squares
       baseAlpha: number;
     }
 
+    // Slot 3 is reserved as the "prominent" thread: it's the middle slot,
+    // visible across most cues, and the single slot that gets the dotted
+    // / hollow-square treatment when a cue's dottedAmount > 0. Lerp on
+    // dottedAmount cross-fades between dot rendering and polyline.
+    const DOTTED_SLOT = 3;
+
     const PRESETS: Record<string, Preset> = {
-      // One thread, alone, drifting more loosely.
+      // A cluster of five threads sharing one y-axis but with different
+      // freq/amp/phase (carried by slot.freqMult/ampMult/phase) — they
+      // weave through each other instead of running as parallel rows.
+      // Slot 3 is the prominent one: rendered as a dotted line
+      // punctuated by hollow squares in accent.
       empty: {
-        visible: [false, false, false, true, false, false, false, false],
-        yNorm:   [0.30,  0.35,  0.40,  0.50, 0.60,  0.65,  0.70,  0.75],
-        amplitude: 8, freq: 0.45, zoned: 0, pulses: 0, lifecycleMask: 0, baseAlpha: 0.35,
+        visible: [true, false, true, true, false, true, true, false],
+        yNorm:   [0.50, 0.50,  0.50, 0.50, 0.50,  0.50, 0.50, 0.50],
+        amplitude: 22, freq: 1.0, zoned: 0, pulses: 0, lifecycleMask: 0,
+        dottedAmount: 1, baseAlpha: 0.95,
       },
-      // Same single thread, calmed down. The "lays flat" pose.
+      // Single thread, calmed down. The "lays flat" pose.
       strip: {
         visible: [false, false, false, true, false, false, false, false],
         yNorm:   [0.30,  0.35,  0.40,  0.50, 0.60,  0.65,  0.70,  0.75],
-        amplitude: 1.5, freq: 0.30, zoned: 0, pulses: 0, lifecycleMask: 0, baseAlpha: 0.75,
+        amplitude: 1.5, freq: 0.30, zoned: 0, pulses: 0, lifecycleMask: 0,
+        dottedAmount: 0, baseAlpha: 0.75,
       },
       // Same thread but now zone-colored: 3 segments, accent → fg-dim → accent.
       pipeline: {
         visible: [false, false, false, true, false, false, false, false],
         yNorm:   [0.30,  0.35,  0.40,  0.50, 0.60,  0.65,  0.70,  0.75],
-        amplitude: 2, freq: 0.40, zoned: 1, pulses: 0, lifecycleMask: 0, baseAlpha: 0.85,
+        amplitude: 2, freq: 0.40, zoned: 1, pulses: 0, lifecycleMask: 0,
+        dottedAmount: 0, baseAlpha: 0.85,
       },
       // Eight threads in three loose bands. Top group, middle group,
       // bottom group — visually echoes pan / chrome / staff-lines.
       layers: {
         visible: [true, true, true,  true, true, true,  true, true],
         yNorm:   [0.22, 0.28, 0.34,  0.46, 0.52, 0.58,  0.70, 0.76],
-        amplitude: 4, freq: 0.50, zoned: 0, pulses: 0, lifecycleMask: 0, baseAlpha: 0.7,
+        amplitude: 4, freq: 0.50, zoned: 0, pulses: 0, lifecycleMask: 0,
+        dottedAmount: 0, baseAlpha: 0.7,
       },
       // Five threads in the middle, but rendered through a moving window.
       lifecycle: {
         visible: [false, true, true, true, true, true, false, false],
         yNorm:   [0.25,  0.36, 0.43, 0.50, 0.57, 0.64, 0.72,  0.80],
-        amplitude: 3, freq: 0.50, zoned: 0, pulses: 0, lifecycleMask: 1, baseAlpha: 0.65,
+        amplitude: 3, freq: 0.50, zoned: 0, pulses: 0, lifecycleMask: 1,
+        dottedAmount: 0, baseAlpha: 0.65,
       },
       // Six threads in two groups; two pulses sweep with phase offset.
       ticking: {
         visible: [true, true, true,  false, false, true, true, true],
         yNorm:   [0.30, 0.36, 0.42,  0.50,  0.50,  0.58, 0.64, 0.70],
-        amplitude: 2, freq: 0.40, zoned: 0, pulses: 2, lifecycleMask: 0, baseAlpha: 0.75,
+        amplitude: 2, freq: 0.40, zoned: 0, pulses: 2, lifecycleMask: 0,
+        dottedAmount: 0, baseAlpha: 0.75,
       },
       // Full weave, gentle breathing — every slot active.
       recap: {
         visible: [true, true, true, true, true, true, true, true],
         yNorm:   [0.22, 0.30, 0.38, 0.46, 0.54, 0.62, 0.70, 0.78],
-        amplitude: 3, freq: 0.45, zoned: 0, pulses: 0, lifecycleMask: 0, baseAlpha: 0.85,
+        amplitude: 3, freq: 0.45, zoned: 0, pulses: 0, lifecycleMask: 0,
+        dottedAmount: 0, baseAlpha: 0.85,
       },
     };
 
@@ -150,6 +172,7 @@
       zoned: number;
       pulses: number;
       lifecycleMask: number;
+      dottedAmount: number;
       baseAlpha: number;
     };
 
@@ -162,6 +185,7 @@
         zoned: p.zoned,
         pulses: p.pulses,
         lifecycleMask: p.lifecycleMask,
+        dottedAmount: p.dottedAmount,
         baseAlpha: p.baseAlpha,
       };
     }
@@ -198,6 +222,42 @@
     // runs, and pure window.resize doesn't fire on layout settles.
     const ro = new ResizeObserver(() => resize());
     ro.observe(canvas);
+
+    // The dotted/hollow-square thread: a row of small accent-colored dots
+    // along the same wobble path as a regular thread, with an evenly-
+    // spaced hollow square punctuating every Nth dot. Square size breathes
+    // on a slow sine so the row doesn't read as perfectly mechanical. Used
+    // only for slot DOTTED_SLOT when a cue's dottedAmount > 0.
+    function drawDottedSquaredThread(slot: Slot, baseY: number, amplitude: number, freq: number, time: number, alpha: number) {
+      if (alpha < 0.01) return;
+      const DOT_SPACING = 7;
+      const DOT_R = 1.2;
+      const SQUARE_EVERY = 7;
+      const SQUARE_BASE = 5;
+      ctx!.fillStyle = accent;
+      ctx!.strokeStyle = accent;
+      ctx!.lineWidth = 1.0;
+      let i = 0;
+      for (let x = 0; x <= w; x += DOT_SPACING, i++) {
+        const wave = amplitude * slot.ampMult * Math.sin(slot.freqMult * freq * (x / w) * Math.PI * 4 + slot.phase + time * 0.0006);
+        const y = baseY + wave;
+        if (i % SQUARE_EVERY === 0) {
+          // Slow per-square breath: each square has its own phase via i,
+          // so the row reads as breathing rather than pulsing in unison.
+          const sizeJitter = 1.6 * Math.sin(time * 0.0009 + slot.phase + i * 0.7);
+          const size = SQUARE_BASE + sizeJitter;
+          ctx!.globalAlpha = alpha;
+          ctx!.strokeRect(x - size / 2, y - size / 2, size, size);
+        } else {
+          // Dots a touch quieter than the squares so the squares lead.
+          ctx!.globalAlpha = alpha * 0.85;
+          ctx!.beginPath();
+          ctx!.arc(x, y, DOT_R, 0, Math.PI * 2);
+          ctx!.fill();
+        }
+      }
+      ctx!.globalAlpha = 1;
+    }
 
     function drawThread(slot: Slot, baseY: number, amplitude: number, freq: number, time: number, alpha: number, zoned: number) {
       if (alpha < 0.01) return;
@@ -248,6 +308,7 @@
         cur.zoned = lerp(cur.zoned, target.zoned, k);
         cur.pulses = lerp(cur.pulses, target.pulses, k);
         cur.lifecycleMask = lerp(cur.lifecycleMask, target.lifecycleMask, k);
+        cur.dottedAmount = lerp(cur.dottedAmount, target.dottedAmount, k);
         cur.baseAlpha = lerp(cur.baseAlpha, target.baseAlpha, k);
       }
 
@@ -255,9 +316,21 @@
       ctx!.globalCompositeOperation = 'source-over';
 
       // Draw threads. yNorm * h resolves to current pixel position so
-      // resize-time changes carry through automatically.
+      // resize-time changes carry through automatically. Slot DOTTED_SLOT
+      // crossfades between polyline and dotted/squared rendering based
+      // on cur.dottedAmount — both modes drawn at proportional alpha
+      // during transitions so the swap doesn't pop.
       for (let i = 0; i < SLOTS; i++) {
-        drawThread(slots[i], cur.yNorm[i] * h, cur.amplitude, cur.freq, time, cur.alpha[i] * cur.baseAlpha, cur.zoned);
+        const baseY = cur.yNorm[i] * h;
+        const slotA = cur.alpha[i] * cur.baseAlpha;
+        if (i === DOTTED_SLOT && cur.dottedAmount > 0.01) {
+          drawDottedSquaredThread(slots[i], baseY, cur.amplitude, cur.freq, time, slotA * cur.dottedAmount);
+          if (cur.dottedAmount < 0.99) {
+            drawThread(slots[i], baseY, cur.amplitude, cur.freq, time, slotA * (1 - cur.dottedAmount), cur.zoned);
+          }
+        } else {
+          drawThread(slots[i], baseY, cur.amplitude, cur.freq, time, slotA, cur.zoned);
+        }
       }
       ctx!.globalAlpha = 1;
 
