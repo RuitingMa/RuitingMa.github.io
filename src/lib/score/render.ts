@@ -1257,6 +1257,41 @@ function prependTranslate(el: Element, dxUnits: number) {
   el.setAttribute('transform', existing ? `${offset} ${existing}` : offset);
 }
 
+/** Map from SMuFL "clef change" (mid-piece courtesy) glyph codepoints to
+ *  their full-size start-of-system equivalents. Verovio emits the small
+ *  variant for every mid-piece clef change so the in-line glyph reads as
+ *  a transitional courtesy mark. The chrome overlay sits at the start of
+ *  the visible window and represents the *current* clef as if it were
+ *  starting a new system, so it should always show the full-size glyph —
+ *  otherwise the overlay clef visibly shrinks each time a courtesy
+ *  change crosses the playhead. */
+const SMALL_TO_FULL_CLEF_GLYPH: Record<string, string> = {
+  E07A: 'E050', // gClefChange → gClef
+  E07B: 'E05C', // cClefChange → cClef
+  E07C: 'E062', // fClefChange → fClef
+};
+
+/** Rewrite small "clef change" glyphs in a cloned clef element to their
+ *  full-size equivalents. Acts on every `<use>` descendant whose href
+ *  matches a known small variant; the SMuFL reference points are
+ *  preserved across the pair (gClef and gClefChange both anchor on the
+ *  G2 line) so swapping the codepoint keeps staff-line alignment. */
+function upgradeChromeClefGlyphs(clefEl: Element): void {
+  for (const u of Array.from(clefEl.querySelectorAll('use'))) {
+    for (const attr of ['xlink:href', 'href']) {
+      const href = u.getAttribute(attr);
+      if (!href) continue;
+      // Format: "#E07A-l3gkhoe" — leading hash, 4-char codepoint, then
+      // Verovio's per-render symbol-id suffix. Only the codepoint changes.
+      const m = href.match(/^(#?)(E[0-9A-F]{3})(.*)$/i);
+      if (!m) continue;
+      const replacement = SMALL_TO_FULL_CLEF_GLYPH[m[2].toUpperCase()];
+      if (!replacement) continue;
+      u.setAttribute(attr, `${m[1]}${replacement}${m[3]}`);
+    }
+  }
+}
+
 /** Read a chrome element's "visual signature" — the joined list of
  *  symbol references its `<use>` children point at. Two elements with
  *  identical signatures render identically; we use this to dedupe
@@ -1411,6 +1446,10 @@ export function buildChromeOverlay(
           lastSig = sig;
 
           const cloned = clefEl.cloneNode(true) as SVGGElement;
+          // Replace small "clef change" glyphs with their full-size
+          // equivalents so the chrome overlay renders every clef at the
+          // same visual weight as the m1 starting clef.
+          upgradeChromeClefGlyphs(cloned);
           const clonedUse = cloned.querySelector('use');
           const clonedTranslate = parseTranslate(
             clonedUse?.getAttribute('transform') ?? null,
