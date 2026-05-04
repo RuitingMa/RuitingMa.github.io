@@ -8,9 +8,15 @@ export const K = {
    *  so the invisible wrap always has content to the right of the one
    *  currently under the playhead. 3 buys an extra iteration of buffer. */
   LOOP_COPIES: 3,
-  /** Reference stage height the header-width constants were measured at.
-   *  Everything else scales proportionally via stageHeight / this value. */
-  REF_STAGE_HEIGHT_PX: 200,
+  /** Default per-staff body height in px (top staff line → bottom staff
+   *  line of one 5-line staff). Drives uniform visual weight across
+   *  pieces: stage height auto-adjusts so this number lands the same in
+   *  every score regardless of how much above-/below-staff annotation
+   *  (ledger, dynamics, harm, slurs) the piece carries. Authors can
+   *  override per-instance via `staffHeight` on `<Score>`. The initial
+   *  `--score-h` (set in Score.astro) only seeds the pre-measure render;
+   *  mountScore replaces it once the staff body span is measured. */
+  DEFAULT_STAFF_HEIGHT_PX: 40,
   /** Floor for the playhead's distance from the stage's left edge. Set
    *  so single-staff scores with up-to-7-accidental keysigs land at the
    *  same playhead axis as 0-accidental ones (otherwise C-major scores

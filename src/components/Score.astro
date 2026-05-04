@@ -31,11 +31,13 @@ interface Props {
   loop?: boolean;
   /** Fraction across the stage where the playhead sits (0 = left, 1 = right). */
   playhead?: number;
-  /** Stage height in px. */
-  height?: number;
+  /** Per-staff body height in px (5-line staff top→bottom). Stage height
+   *  auto-adjusts so this number lands the same in every piece regardless
+   *  of how much above-/below-staff annotation it carries. Default 40. */
+  staffHeight?: number;
 }
 
-const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
+const { slug, loop, playhead = 0.22, staffHeight = 40 } = Astro.props;
 ---
 
 <figure
@@ -43,7 +45,8 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
   data-slug={slug}
   data-playhead={playhead}
   data-loop={loop ? '' : null}
-  style={`--score-h: ${height}px; --score-playhead: ${playhead * 100}%`}
+  data-staff-height={staffHeight}
+  style={`--score-h: 200px; --score-playhead: ${playhead * 100}%`}
 >
   <div class="score-stage" role="button" tabindex="0" aria-label="play or pause score">
     <div class="score-pan-mask" aria-hidden="true">
@@ -85,13 +88,16 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
   .score-stage {
     position: relative;
     width: 100%;
-    /* `--score-h` is set by the inline style (author baseline) and
-       further multiplied by JS for multi-staff pieces. The vw cap is a
-       narrow-viewport fallback so a tall multi-staff score doesn't
-       overflow phone screens — kept generous (90vw) so it only kicks
-       in on extreme squeeze, and JS already enforces an 80vh ceiling
-       upstream. */
-    height: min(var(--score-h, 200px), 90vw);
+    /* `--score-h` is the actual stage height: the inline style seeds it
+       at 200px (initial render), then mountScore replaces it with a
+       value computed from the measured staff body span so each staff
+       lands at the author's `staffHeight` target. JS also enforces an
+       80vh ceiling so an orchestral piece doesn't push past the
+       viewport. No CSS-side viewport-width cap — narrow phones simply
+       get a taller score that vertical-scrolls; clamping to 90vw would
+       fight the staff-driven sizing and make staves uneven across
+       pieces. */
+    height: var(--score-h, 200px);
     overflow: hidden;
     cursor: grab;
     /* Prevent the browser's native touch-scrolling so our drag handler

@@ -90,23 +90,6 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
   try { rendered = await renderScore(source); }
   catch (err) { console.warn('[score]', slug, 'Verovio render failed:', err); return null; }
 
-  // --- Auto-scale stage height for multi-staff pieces --------------------
-  // Verovio renders the SVG to fill the stage height; with N staves
-  // sharing that height, each staff ends up ~1/N the size of a solo
-  // single-staff render. We ensure at least REF_STAGE_HEIGHT_PX of
-  // stage per staff so individual staves land at a consistent visual
-  // size regardless of staff count. The author's `--score-h` is
-  // honored when it's already at least that tall. Capped to 80vh so
-  // a 4-staff orchestral piece doesn't push past the viewport.
-  const staffCount = Math.max(1, rendered.staffGroup.staves.length);
-  if (staffCount > 1) {
-    const authoredH = parseFloat(host.style.getPropertyValue('--score-h')) || K.REF_STAGE_HEIGHT_PX;
-    const minMultiH = K.REF_STAGE_HEIGHT_PX * staffCount;
-    const cap = window.innerHeight * 0.8;
-    const effectiveH = Math.min(Math.max(authoredH, minMultiH), cap);
-    host.style.setProperty('--score-h', `${effectiveH}px`);
-  }
-
   // --- Inject SVG copies into pan -----------------------------------------
   // Loop scores always use N identical copies. Non-loop scores get one
   // copy that we then slice into tiles when its displayed width exceeds
@@ -120,6 +103,44 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
     : initialPanSvgs;
   const tile0 = panSvgs[0];
   if (!tile0) return null;
+
+  // --- Auto-scale stage so each staff body lands at staffHeight px --------
+  // The pan SVG renders at `height: 100%` of the stage. Verovio's bbox
+  // includes everything above + below the staves (ledger, dynam, harm,
+  // slurs, articulations) so a piece with dense annotation ends up with
+  // a smaller staff body in stage px than a sparse one. We measure the
+  // first staff's 5-line span at the initial stage height (200px), then
+  // rescale `--score-h` so the span lands at the author-requested target.
+  // Every other glyph scales proportionally; multi-staff pieces grow the
+  // stage naturally without a separate staffCount multiplier. No upper
+  // cap — orchestral pieces honestly need the vertical space and the
+  // page scrolls; clamping would shrink staves and break uniform sizing
+  // across pieces on the same page.
+  {
+    const targetStaffPx = Number(host.dataset.staffHeight) || K.DEFAULT_STAFF_HEIGHT_PX;
+    const m1 = tile0.querySelector('.measure');
+    const firstStaff = m1?.querySelector('.staff');
+    if (firstStaff) {
+      let topY = Infinity;
+      let bottomY = -Infinity;
+      for (const c of Array.from(firstStaff.children)) {
+        if (c.tagName !== 'path') continue;
+        const r = (c as Element).getBoundingClientRect();
+        if (r.width === 0 && r.height === 0) continue;
+        if (r.top < topY) topY = r.top;
+        if (r.bottom > bottomY) bottomY = r.bottom;
+      }
+      const measuredStaffPx = bottomY - topY;
+      if (Number.isFinite(measuredStaffPx) && measuredStaffPx > 0) {
+        const currentStageH = stage.getBoundingClientRect().height;
+        const newStageH = currentStageH * (targetStaffPx / measuredStaffPx);
+        host.style.setProperty('--score-h', `${newStageH}px`);
+        // Read a layout-affecting property to force reflow so subsequent
+        // getBoundingClientRect calls observe the new stage height.
+        void stage.offsetHeight;
+      }
+    }
+  }
 
   // --- Measure geometry (anchors, header, staff y's) ----------------------
   // panRect0 spans all tiles (or the single SVG when unsliced); coords are

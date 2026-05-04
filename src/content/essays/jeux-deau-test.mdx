@@ -11,7 +11,7 @@ import Score from '../../components/Score.astro';
 
 每个轴(clef / keysig / meter)频繁切换,含 mid-measure 切换,跨越 14 小节。
 
-<Score slug="chaos" height={320} />
+<Score slug="chaos" />
 
 ## 一、手写 MEI 简化版（evocation）
 
@@ -31,13 +31,12 @@ import Score from '../../components/Score.astro';
 
 下面这一份是从 MuseScore 社区下载的 Jeux d'eau **完整 MusicXML** 转写。文件丢进 `public/scores/jeux-deau-ravel/score.mxl`，不需要任何转换——Verovio 的 `loadZipDataBase64` 直接吞 PKZIP 容器，Score 组件的 fetcher 改了 5 行支持 `.mxl/.musicxml/.mei` 三种扩展。
 
-<Score slug="jeux-deau-ravel" height={420} />
+<Score slug="jeux-deau-ravel" />
 
 整首曲子全部小节，所有 32nd 音符、双手织体、pedal 标记、原谱 dynamic 与 tempo 全在。这就是「找到 MusicXML 后所需的工作」——0 行 MEI 手写。
 
-**注意双谱表的展示限制**：Score 组件最初是按单谱表设计的，渲染钢琴大谱表（treble + bass）会有视觉不完美：
+**注意双谱表的展示限制**：Score 组件最初是按单谱表设计的，渲染钢琴大谱表（treble + bass）仍有视觉不完美：
 
-- Stage 高度需要明显加大（这里传了 `height={420}`，原默认 200px 装不下）
 - Frozen overlay 现在仍只显示 treble clef + 调号 + 拍号，bass clef 还没纳入
 - 多谱表的 mid-piece tempo overlay 因 MusicXML→MEI 转换的 `<tempo>` 出现位置（多个/staff/lang 分布），目前我们的 extractor 只接 hand-written 形态——overlay 暂不出现，但 SVG 内的 tempo 字形和音频节奏都对
 
