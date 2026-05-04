@@ -8,81 +8,27 @@ tint: rust
 
 import Score from '../../components/Score.astro';
 
-{/*
-  起草大纲（按 cue 顺序）—— 几个工程难题，按"形状"排列。
-  整篇的脊梁是：每一节都是「我以为对的单位 → 实际该用的单位」的故事。
-  这个一致性比任何单一的难题都更值得说出来。
-
-  opener     — 引：写组件时撞到的几面墙，一开始看起来八竿子打不着——
-               一个是 SVG 的 viewBox，一个是 GPU 纹理上限，一个是 MEI
-               的元数据，一个是 SMuFL 的字形编码。后来发现它们形状是
-               一样的：每次都是我第一次挑的尺子，量的不是真正想测的东西。
-
-  ruler      — 谁来当尺：staff body，不是 bbox。
-               一开始 SVG 用 `height: 100%` 撑舞台。Verovio 的 bbox
-               包含上下所有装饰（ledger、dynamics、harm、slurs），所以
-               装饰多的曲子 staff 反而被挤扁——视觉权重在曲子之间漂移。
-               真正该量的是 staff body 的 5 线像素跨度。
-               解：先用 200px 临时舞台量第一条 staff 的 5 线，再算
-               比例反推 `--score-h`。多谱表自然变高，不需要额外补偿。
-
-  ceiling    — 谁先撞到天花板：纹理上限，不是带宽。
-               Ravel 全曲 SVG 宽 37,000 像素。Intel 集成显卡单纹理上限
-               8,192px；现代独显 16,384px。超过 → 浏览器掉到 CPU 光栅化
-               → 每一帧拖累整页 → ~10fps。
-               不是网络不够、不是 SVG 太复杂；是那个东西塞不进一张 GPU
-               纹理里。
-               解：沿小节切 tile，每片 ≤4096px，外层 viewBox 做 crop，
-               内层 `definition-scale` viewBox 不动。每片各自上 GPU。
-
-  source     — 信哪个真理源：渲染结果，不是 MEI 元数据。
-               冻结报头在切换 clef/keysig/meter 时，本来想从 MEI 元数据
-               推：解析 `<clef>` 的 shape 和 line，组合签名，用作 dedup
-               key。结果发现 MEI 里 `clef sameas`、courtesy clef 引用、
-               octave displacement、cancel naturals 全是边界情况，每补
-               一个就漏一个。
-               改向下游真理找：把 Verovio 渲染出来的 `<g class="clef">`
-               里的 `<use xlink:href>` 列表（剥掉 cancel naturals 后）
-               作为视觉签名。同样的字形组合 → 同样的签名 → dedup。
-               同时把 (谱表 × clef/keysig/meter) 拆成独立 track，每个
-               独自 binary-search + opacity crossfade，钢琴上层换谱号
-               下层不闪。
-
-  glyph      — 真理源也有边界：SMuFL 大小变体的小坑。
-               即便信渲染结果，Verovio 给 mid-piece 的是 SMuFL "clef
-               change" 小变体（E07A/E07B/E07C），高度只有正版的 ~70%。
-               克隆到 chrome overlay 里就看到谱号每次跨 mid-piece 切换
-               都缩一圈。
-               解：三键映射（E07A→E050, E07B→E05C, E07C→E062），SMuFL
-               规范保证小写大写共享 reference point，所以替换后五线对位
-               不变。
-               这一节是上一节的小注脚——「视觉签名」作为真理源也有它
-               自己的边界，需要再向下走一步看到字形编码层。
-
-  clocks     — 时间也是一把容易看错的尺：rAF 不等于 AudioContext。
-               播放头要走得准，音符要响得准，两边对的是同一个时间——
-               但它们用的不是同一只钟。视觉走 rAF（屏幕刷新率），声音
-               走 AudioContext（硬件采样钟），两只会缓慢漂移。
-               另一个具体的版本：MEI 的 `<tempo>` tstamp 在小节起点，
-               glyph 在小节中段才出现。按 tstamp 触发 overlay 切换 →
-               文字在还没到播放头时就换，几百 ms 的滞后。
-               解：retiming——算 glyph 的实际 x 位置，反推它过播放头
-               的那一刻的 ms，用那个 ms 触发切换。
-
-  recap      — 这些之后留下的不是技术总结，是一种习惯：先怀疑自己
-               用的尺。直到把"我以为在测什么"和"我实际在测什么"对
-               齐了，所有后续修补都是在错的层面打补丁。
-*/}
-
 <section data-cue="opener">
 
-{/* TODO: 引。每个难题的形状都一样：第一直觉的单位错了。 */}
+写这个组件的时候撞到几面墙，一开始看起来彼此八竿子打不着——一个是 SVG 的 viewBox，一个是 GPU 纹理上限，一个是 MEI 的元数据，一个是 SMuFL 的字形编码，一个是 AudioContext 的钟。撞过几次之后才看出它们的形状是一样的。
+
+每次都是这样：我以为找到了对的尺，写到一半发现度量不出真正想测的东西。再退一步看，这不是 bug 也不是优化空间——是在错的层面思考。换尺，问题就消失。
+
+下面是几次。
 
 </section>
 
 <section data-cue="ruler">
 
-{/* TODO: staff-anchor 缩放。bbox 不是合理的尺。 */}
+第一次的尺是 SVG 的 bbox。
+
+让组件的舞台用 `height: 100%` 撑起来，由 SVG 的自然 bbox 决定纵向大小。看起来很对——谁会反对一个"按内容大小自适应"的容器？
+
+然后发现装饰密的曲子 staff 反而**被挤扁**了。Ravel 的水波 32 分音符密如发丝，加上 ledger、harm、dynam、slurs，bbox 上下被装饰撑得很高；舞台高度恒定，那 staff 在垂直像素里就被压成原来一半。同一页两个曲子放一起，staff 视觉粗细完全不一样——音乐没说的事，排版替它说出来了。
+
+bbox 测的是"全部内容占多少空间"。我想要的是"staff body 占多少空间"——5 条横线之间的纵向跨度。这才是真正决定视觉权重的那把尺。
+
+解法：组件先用一个临时高度（200px）渲一次，量出第一条 staff 的 5 线像素跨度，按目标值反推一下，再设回 `--score-h`。多谱表自然变高，因为 bbox 也跟着变高——但每条 staff 仍是目标的 40px。整页里所有 score 落齐了。
 
 <Score slug="jeux-deau-ravel" />
 
@@ -90,13 +36,29 @@ import Score from '../../components/Score.astro';
 
 <section data-cue="ceiling">
 
-{/* TODO: GPU tile 切片。37k 像素 vs 8,192 上限。 */}
+第一次的尺是像素总量。
+
+Ravel 全曲渲出来 SVG 宽 37,000 像素。一开始觉得问题是"东西太大了"——优化方向：能不能压缩 SVG、能不能减少节点、能不能虚拟化、能不能延迟加载？这些方向都试了一些，都只挪一点点，怎么挪都救不回 60fps。
+
+真正的尺是 GPU 单纹理的边长上限。浏览器把每个 transform 的层贴到 GPU 当一张纹理用；超过单纹理 max dimension（Intel 集成显卡 8,192px、现代独显 16,384px），层就降级回 CPU 光栅化——每一帧重新画。Ravel 全曲一张纹理：37,000 远超上限，掉到 ~10fps，再优化 SVG 节点也救不回来。
+
+不是带宽的问题，不是 SVG 复杂度的问题，是**那个东西塞不进一张 GPU 纹理里**。
+
+解法：把 SVG 沿小节切片，每片 ≤4096px。外层 SVG 的 viewBox 做 crop，内层 `definition-scale` 的 viewBox 不动——每片各自上 GPU，整体再贴回原位。每片各跑各的层，GPU 高兴。
 
 </section>
 
 <section data-cue="source">
 
-{/* TODO: per-axis chrome + visual signature dedup。 */}
+第一次的尺是 MEI 元数据。
+
+冻结报头需要在 mid-piece 的谱号 / 调号 / 拍号切换时把当前状态显示在最左边。最直觉的做法是从 MEI 元数据推：解析每个 `<clef>` 的 shape 和 line、`<keySig>` 的 sig 属性、`<meterSig>` 的 count 和 unit，组成签名，用作"哪些层是相同的" dedup key。
+
+写到一半就开始漏。MEI 里的 `<clef sameas="..."/>` 是引用上一个的语法糖，需要解引用；courtesy clef 是 `<clef>` 但不是真的状态变化，只是预告；octave displacement (8va / 8vb) 改的是音域不是 shape；cancel naturals 是过渡符号，到下一小节就消失。每补一个边界情况，下一首曲子又能找到新的。
+
+退一步看：这些复杂度全在 MEI 这一层。Verovio 渲完之后，**屏幕上的字形是确定的**——它把所有边界情况都展平成具体的 `<use xlink:href>` 引用。我从下游捡起这块真理：把渲染后的 `<g class="clef">` 里的 use 列表当作视觉签名，剥掉 cancel naturals 后做 dedup。同字形 → 同签名 → 同一层。
+
+更彻底的：同一段的复杂度也藏在"一块整体"里。多谱表上层换谱号，下层不该闪——所以把 (谱表 × 谱号/调号/拍号) 拆成各自独立的 track，每个独自 binary-search 加 opacity crossfade。一处变化一处动。
 
 <Score slug="all-keys" />
 
@@ -104,7 +66,15 @@ import Score from '../../components/Score.astro';
 
 <section data-cue="glyph">
 
-{/* TODO: small→full 谱号映射。SMuFL E07A→E050。 */}
+但渲染结果也有它的边界。
+
+Verovio 给 mid-piece 的谱号是 SMuFL 的"小变体"——E07A 的小 G 谱号、E07B 的小 C、E07C 的小 F。视觉上它们比正版（E050 / E05C / E062）高度小约 70%，是音乐里 courtesy 的视觉惯例。
+
+这意味着我那个"用渲染结果做视觉签名"的方案——克隆到冻结报头里之后，每次跨 mid-piece 谱号切换时报头里的谱号都会**缩一圈**。视觉签名是统一了，可缩比例没统一。
+
+再向下走一步：在字形编码层做替换。建一张三键映射 `{ E07A: E050, E07B: E05C, E07C: E062 }`，克隆出来送到冻结报头之前，把 `<use xlink:href>` 里的 codepoint 替成正版。SMuFL 规范保证小变体大变体共享 reference point，所以替换后五线对位不变。
+
+这一节是上一节的小注脚——**真理源也有它自己的边界**，需要再向下走一步才看到。
 
 <Score slug="chaos" />
 
@@ -112,7 +82,15 @@ import Score from '../../components/Score.astro';
 
 <section data-cue="clocks">
 
-{/* TODO: rAF 钟 vs AudioContext 钟，tempo overlay retiming。 */}
+时间也是一把容易看错的尺。
+
+第一次的尺是视觉自己。视觉走 rAF，于是把时间也交给 rAF——每帧读一次 `performance.now()`，从 anchors 表查像素位置，写 translate3d。听起来挺合理。
+
+然后听到声音和画面**慢慢漂**。十秒钟看不出，三十秒钟开始能感觉，一分钟之后明显错位。原因：浏览器的高分辨率时钟和音频硬件的采样钟不是同一只——切到后台 tab 时浏览器钟会停，切回来不补；音频钟独立跑，于是两边对不上了。
+
+真正的尺是 `audioContext.currentTime`。让视觉钟问音频钟当前在哪一秒，不再自己计时。两只钟之间没有谁同步谁——视觉钟读、不改；音频钟自顾自往前走。它们在同一首曲子上跳同一支舞，谁也不主导。
+
+另一个版本的同一个错：MEI 的 `<tempo>` 标签 tstamp 在小节起点，glyph 在小节中段才画出来。按 tstamp 触发 overlay 文字切换——文字在还没到播放头时就换好，之后几百 ms 才看到 glyph 过来。再向下走一步，按 glyph 在 SVG 里的实际 x 位置反推它过播放头的那一刻的 ms。timestamp 是源数据，但**视觉时间发生在像素到达眼睛**的那一瞬，不是元数据写明的那一瞬。
 
 <Score slug="jeux-deau" />
 
@@ -120,6 +98,12 @@ import Score from '../../components/Score.astro';
 
 <section data-cue="recap">
 
-{/* TODO: 收。先怀疑自己用的尺。 */}
+这些之后留下的不是技术结论。是一种习惯：
+
+先怀疑自己用的尺。
+
+每次写到一半感觉不对、补丁打不动、解一处漏两处——往往不是补丁不够多，是尺错了。退一步问："我以为在测什么？我实际在测什么？"两个对不齐的时候，所有后续修补都在错的层面发生，越补越乱。
+
+对齐了，问题反而消失。组件不是设计出来的，是测对几次之后剩下的形。
 
 </section>
