@@ -63,6 +63,20 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
 </script>
 
 <style>
+  /* Verovio embeds SMuFL music characters (quarter-note glyph in
+     "♩ = 144" tempo strings, dynamics modifiers like the small "p"
+     before "dolcissimo") in `<tspan font-family="Leipzig">` inside
+     pan text. Without the Leipzig font the browser falls back to the
+     default serif and renders the SMuFL Private-Use codepoints as
+     tofu boxes. Self-host the WOFF2 (already in /public/fonts/) so
+     these inline music characters render the same in Chromium and
+     Firefox without a third-party CDN dependency. */
+  @font-face {
+    font-family: 'Leipzig';
+    src: url('/fonts/Leipzig.woff2') format('woff2');
+    font-display: swap;
+  }
+
   .score {
     margin: 2.2em 0;
     padding: 0;
@@ -116,7 +130,12 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
     height: 100%;
     pointer-events: none;
     z-index: 0;
-    color: var(--fg-dim);
+    /* Stronger dim than `--fg-dim`: structural lines are scaffolding,
+       not content. ~36% effective alpha (var --fg-dim is 78%, mixed
+       at 45% with transparent). Same shade applied below to ledger
+       lines + bar lines so all three structural axes recede in
+       lockstep. */
+    color: color-mix(in srgb, var(--fg-dim) 45%, transparent);
   }
   .score-stage :global(.score-staff-lines line) {
     stroke: currentColor;
@@ -212,16 +231,26 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
     display: block;
     height: 100%;
     width: auto;
-    color: var(--fg-dim);
-    /* `fill` and `stroke` are inheritable in SVG, so setting them on the
-       root cascades to every descendant that doesn't override. Combined
-       with render.ts's string-level rewrite of literal `fill="black"` /
-       `stroke="black"` to `currentColor`, this single rule covers every
-       glyph Verovio emits — noteheads, beams, ties, AND the long tail
-       of less common ones (arpeggios, octave brackets, cross-staff
-       group bars, ornaments) — without per-class enumeration. */
+    /* Default ink: full-opacity --fg. `currentColor` cascades from this
+       to every glyph (noteheads, beams, ties, accidentals, dynamics,
+       clef changes, etc.) via SVG's inherited fill/stroke. Combined
+       with render.ts's string-level rewrite of literal `fill="black"`
+       / `stroke="black"` to `currentColor`, one root rule covers the
+       whole long tail without per-class enumeration. Structural lines
+       (staff lines, ledger lines, bar lines) override below to the
+       dim variant so they read as background scaffolding under the
+       solid-white musical content. */
+    color: var(--fg);
     fill: currentColor;
     stroke: currentColor;
+  }
+  /* Structural scaffolding — recede so the music reads first. Ledger
+     lines and bar lines pick up the same dim-of-dim treatment as the
+     dedicated staff-lines layer above (~36% effective alpha) so all
+     three line types read as one quiet background grid. */
+  .score-pan :global(svg .ledgerLines),
+  .score-pan :global(svg .barLine) {
+    color: color-mix(in srgb, var(--fg-dim) 45%, transparent);
   }
   /* Pin direct SVG children of the pan to their natural width. Without
      this, flex-shrink (default 1) collapses them when pan's shrink-to-
@@ -242,42 +271,18 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
     opacity: 0.45;
   }
 
-  /* === Active-note / active-harm flash ==============================
-     score-player.ts adds `.is-active` to sounding notes + harms.
-     Activation has a 60ms fade-in to the accent color; deactivation
-     SNAPS instantly back to dim — no fade-out.
-     Why no fade-out: `color` is not a compositor-friendly property,
-     so each ms of an in-flight transition forces a paint of the note's
-     subtree. On dense pieces (Ravel ~30 32nd-notes/sec), a 600ms
-     fade-out leaves ~18 notes interpolating concurrently at any
-     moment; combined with the wide pan SVG (~37k px) and per-frame
-     translate3d, the browser ended up CPU-rasterizing nearly the whole
-     stage on every frame, dropping playback to ~15 fps. Snap-off
-     keeps the active set ≤ 1–2 mid-fade glyphs at any moment, so
-     paint cost stays bounded regardless of polyphony. */
-  .score-pan :global(svg .note.is-active),
-  .score-pan :global(svg .harm.is-active) {
-    color: var(--accent);
-    transition: color 60ms ease-out;
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .score-pan :global(svg .note.is-active),
-    .score-pan :global(svg .harm.is-active) {
-      transition: none;
-    }
-  }
-
   /* === Frozen header overlay ======================================== */
   /* Holds the clef + keysig + meter glyphs only. No staff lines (those
-     are in .score-staff-lines). No background either — the pan mask
-     already drops music to zero opacity in this region, and the
-     staff-lines layer sits below the overlay, so there's nothing to
-     hide here.
+     are in .score-staff-lines). No background — the pan mask already
+     drops music to zero opacity in this region, and the staff-lines
+     layer sits below the overlay, so there's nothing to hide here.
 
-     For modulating scores, one `.score-frozen-shell` per unique keysig
-     is stacked here, absolutely positioned. The render loop toggles
-     `.is-current` on the shell matching the current score-time key;
-     the others fade out. */
+     Internal structure: a single SVG with one shell skeleton, plus
+     stacked `<g class="clef|keySig|meterSig">` layers per (staff, axis).
+     Each layer is opacity 0 by default; the render loop toggles
+     `.is-current` on the active layer per track. Independent crossfades
+     per axis × staff — a clef change on staff 1 doesn't trigger any
+     visual change on staves 0 and 2 or on the keysig/meter slots. */
   .score-stage :global(.score-frozen-overlay) {
     position: absolute;
     top: 0;
@@ -287,27 +292,67 @@ const { slug, loop, playhead = 0.22, height = 200 } = Astro.props;
     pointer-events: none;
     z-index: 2;
   }
-  .score-stage :global(.score-frozen-shell) {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    opacity: 0;
-    transition: opacity 450ms cubic-bezier(0.22, 1, 0.36, 1);
-  }
-  .score-stage :global(.score-frozen-shell.is-current) {
-    opacity: 1;
-  }
-  .score-stage :global(.score-frozen-shell svg) {
+  .score-stage :global(.score-frozen-overlay svg) {
     display: block;
     height: 100%;
     width: auto;
-    color: var(--fg-dim);
-    /* Same inheritance trick as the pan SVG above: one root rule covers
-       every glyph in the cloned shell, no class enumeration needed. */
+    /* Solid ink for chrome glyphs (clef, keysig, meter) — same
+       full-opacity treatment as pan symbols. Descendant selector (not
+       `> svg`) so the rule reaches Verovio's nested
+       `<svg class="definition-scale">` too — without it, the inner
+       SVG resets its color/fill context to the SVG default (black)
+       and every glyph renders solid black against the dim page. */
+    color: var(--fg);
     fill: currentColor;
     stroke: currentColor;
+  }
+  /* Default: every chrome layer hidden. Crossfade transitions on
+     opacity are cheap (composite-only) in both Chromium and Firefox
+     for SVG <g> elements. Clef + keysig get the long symmetric fade
+     because the visual content meaningfully differs across layers
+     (G ↔ F clef glyph; sharps ↔ flats stack); a brief overlap at 0.5
+     opacity reads as a clean morph. */
+  .score-stage :global(.score-frozen-overlay g.clef),
+  .score-stage :global(.score-frozen-overlay g.keySig) {
+    opacity: 0;
+    transition: opacity 450ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .score-stage :global(.score-frozen-overlay g.clef.is-current),
+  .score-stage :global(.score-frozen-overlay g.keySig.is-current) {
+    opacity: 1;
+  }
+  /* Meter is asymmetric: outgoing disappears INSTANTLY, incoming fades
+     in over 250ms. Why: every meter variant stacks at the same X, and
+     all share the bottom digit "4" (4/4, 2/4, 3/4 → all "x/4"). A
+     symmetric crossfade renders both glyphs at 0.5 opacity at the
+     midpoint, which composes the top digits into a smudge that reads
+     as "missing meter" while the same-position "4" sums to full
+     opacity. The asymmetric version skips the overlap entirely — only
+     one glyph is on screen at a time, and the brief in-fade keeps
+     the swap from feeling like a hard cut. */
+  .score-stage :global(.score-frozen-overlay g.meterSig) {
+    opacity: 0;
+    transition: opacity 0ms;
+  }
+  .score-stage :global(.score-frozen-overlay g.meterSig.is-current) {
+    opacity: 1;
+    transition: opacity 250ms ease-out;
+  }
+  /* Meter-slot slides horizontally when the active keysig's width
+     changes (e.g. C → F# pushes the meter right by ~6 sharps' width).
+     The transform attribute is rewritten by JS on keysig swap; this
+     transition makes the slide smooth and keeps the meter visually
+     attached to its keysig instead of jumping. */
+  .score-stage :global(.score-frozen-overlay g.meter-slot) {
+    transition: transform 450ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .score-stage :global(.score-frozen-overlay g.clef),
+    .score-stage :global(.score-frozen-overlay g.keySig),
+    .score-stage :global(.score-frozen-overlay g.meterSig),
+    .score-stage :global(.score-frozen-overlay g.meter-slot) {
+      transition: none;
+    }
   }
 
   /* === Right-edge blur-in =============================================

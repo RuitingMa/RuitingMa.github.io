@@ -8,8 +8,8 @@
  *      Pure functions over the SVG once it's in the DOM. Compose in
  *      mountScore (see index.ts).
  *   3. Per-frame loop:        setupRenderLoop()
- *      The rAF that translates `.score-pan`, toggles glyph glow, and
- *      crossfades the frozen overlay on header changes.
+ *      The rAF that translates `.score-pan` and crossfades the frozen
+ *      overlay on header changes.
  *
  * No transport, no audio. Reads ms positions from a ScorePlayer-shaped
  * handle (type-only import keeps render.ts independent of player.ts).
@@ -20,19 +20,14 @@ import { loadVerovio } from './verovio';
 // constructor; the worker entry is bundled as a separate chunk and
 // the URL is resolved correctly in both dev and prod builds.
 import RenderWorkerCtor from './render-worker.ts?worker';
-import {
-  headerFingerprint,
-  type Anchor,
-  type ClefState,
-  type FrozenOverlay,
-  type Harm,
-  type HeaderEvent,
-  type MeterState,
-  type Note,
-  type Rendered,
-  type StaffDef,
-  type StaffGroup,
-  type TempoEvent,
+import type {
+  Anchor,
+  Harm,
+  Note,
+  Rendered,
+  StaffDef,
+  StaffGroup,
+  TempoEvent,
 } from './types';
 import type { ScorePlayer } from './player';
 
@@ -91,7 +86,16 @@ function arrayBufferToBase64(buf: ArrayBuffer): string {
  *  Why DOMParser instead of regex string surgery: the SMuFL font defs
  *  contain `<glyph>` elements whose substring `<g` confuses any
  *  homemade balanced-tag tracker, eating whole sibling subtrees by
- *  accident. Parsing is a few ms on Ravel's SVG and is correct. */
+ *  accident. Parsing is a few ms on Ravel's SVG and is correct.
+ *
+ *  Pure-BPM tempo markings (the `<g class="tempo">` rendered as just
+ *  `♩=N` with no descriptive word) are also stripped. A series of
+ *  rit. BPM steps stacks up to a row of identical-looking quarter-
+ *  note-equals-number stamps that crowd the pan; the tempo overlay
+ *  in the top-left already shows the currently-active value, so the
+ *  inline copies are redundant. Named tempos ("Allegretto", "TRES
+ *  DOUX") are kept — those carry interpretive intent the overlay's
+ *  numeric display can't convey. */
 function stripInvisibleChromeFromSvgString(svgStr: string): string {
   const targets = [
     '.pb', '.sb',
@@ -104,22 +108,29 @@ function stripInvisibleChromeFromSvgString(svgStr: string): string {
   const doc = new DOMParser().parseFromString(svgStr, 'image/svg+xml');
   if (doc.querySelector('parsererror')) return svgStr;
   for (const el of Array.from(doc.querySelectorAll(targets))) el.remove();
+  // Strip pure-BPM tempo glyphs: `<g class="tempo">` whose only
+  // textual payload is a music symbol (♩, ♪, etc., from the Leipzig
+  // PUA E000-F8FF range) plus digits + `=` + parens + whitespace.
+  // A `<g>` with ANY 3-or-more consecutive Latin/Greek/CJK letters
+  // is a named tempo and stays.
+  const NAMED_RE = /[A-Za-zÀ-žα-ωΑ-Ω一-鿿]{3,}/;
+  for (const tempoEl of Array.from(doc.querySelectorAll('.tempo'))) {
+    const txt = tempoEl.textContent ?? '';
+    if (!NAMED_RE.test(txt)) tempoEl.remove();
+  }
   return new XMLSerializer().serializeToString(doc);
 }
 
-/** Drop staves that carry no meaningful musical content. A staff is
- *  considered "sparse" when it has fewer than 10% the note count of
- *  the busiest staff in the score (or zero notes outright). Returns
- *  the serialized MEI with empty/sparse staves removed, or null if
- *  every staff is dense enough or nothing could be parsed.
+/** Drop staves that carry no notes at all across the entire piece.
+ *  Returns the serialized MEI with truly-empty staves removed, or null
+ *  if every staff has at least one note (or nothing could be parsed).
  *
- *  Why: MusicXML→MEI conversions (esp. MuseScore exports of piano
- *  music with cross-hand passages on a third staff) often declare
- *  staves used for only a handful of bars across the entire piece.
- *  Rendering them adds a near-empty row to the grand staff for the
- *  vast majority of measures — pure visual noise. The 10% threshold
- *  drops Ravel's swing-up 3rd staff (71 notes vs 2846 on staff 1)
- *  while keeping balanced LH/RH parts (typically 30–60% split). */
+ *  Why ZERO instead of a fractional threshold: a sparse-but-nonzero
+ *  staff (e.g. Ravel's 3rd staff for cross-hand passages: 71 notes vs
+ *  2846 on staff 1) carries real music; deleting it makes those notes
+ *  silent. The remaining visual noise of long-empty stretches is
+ *  handled downstream by per-staff visual dimming when the staff is
+ *  silent for many consecutive measures, NOT by removal here. */
 function trimEmptyStaves(meiText: string): string | null {
   let doc: Document;
   try {
@@ -137,9 +148,6 @@ function trimEmptyStaves(meiText: string): string | null {
     noteCount.set(n, (noteCount.get(n) ?? 0) + staff.querySelectorAll('note').length);
   }
   if (noteCount.size === 0) return null;
-  const maxCount = Math.max(...noteCount.values());
-  if (maxCount === 0) return null;
-  const sparseThreshold = maxCount * 0.1;
 
   const allStaffDefs = Array.from(doc.querySelectorAll('staffDef[n]'));
   const emptyNs = new Set<string>();
@@ -147,7 +155,7 @@ function trimEmptyStaves(meiText: string): string | null {
     const n = sd.getAttribute('n');
     if (!n) continue;
     const cnt = noteCount.get(n) ?? 0;
-    if (cnt < sparseThreshold) emptyNs.add(n);
+    if (cnt === 0) emptyNs.add(n);
   }
   if (emptyNs.size === 0) return null;
   // Refuse to drop ALL staves — leaves Verovio nothing to render and
@@ -217,7 +225,7 @@ function sourceHash(src: ScoreSource): string {
 /** Bumped whenever the persisted Rendered shape changes. Old entries
  *  are silently ignored (treated as misses) so a stale schema can't
  *  feed the new pipeline malformed data. */
-const IDB_SCHEMA_VERSION = 3;
+const IDB_SCHEMA_VERSION = 10;
 const IDB_NAME = 'score-cache';
 const IDB_STORE = 'rendered';
 
@@ -518,19 +526,15 @@ export async function renderScoreUncached(src: ScoreSource): Promise<Rendered> {
     }
   }
 
-  // Parse the MEI source once, then extract harm onsets, clef/keysig
-  // events, and tempo events in a single walk of <section>'s direct
-  // children. Verovio's `getTimesForElement` returns `{}` for harm
-  // elements — it only carries timing for notes/rests — and doesn't
-  // expose clef/key/tempo changes, so we compute all three ourselves.
-  //
-  // BPM is tracked piecewise: every time we see a <tempo> child of a
-  // measure (with tstamp=1) or a between-measure <scoreDef midi.bpm>,
-  // we update the running BPM. Subsequent measures use the new BPM.
-  // Verovio's timemap respects mid-piece tempo internally, so this
-  // manual track only matters for harm onsets and the tempo overlay.
+  // Parse the MEI source once and walk it for everything that needs MEI
+  // structure (not visible glyphs): the staff group (count + brace
+  // symbol), tempo events, harm onsets, and the running BPM/meter that
+  // turn `<tempo>`/`<harm>` tstamps into ms positions. Clef/keysig
+  // chrome state used to be derived here too — that path now flows
+  // through `buildChromeOverlay` reading the rendered SVG directly,
+  // since Verovio's glyph choices (E07A vs E050, courtesy clefs, etc.)
+  // are the only source of truth that consistently matches the pan.
   const harms: Harm[] = [];
-  const headerEvents: HeaderEvent[] = [];
   const tempoEvents: TempoEvent[] = [];
   let meterCount = 4;
   let meterUnit = 4;
@@ -547,53 +551,6 @@ export async function renderScoreUncached(src: ScoreSource): Promise<Rendered> {
     let currentBpm = Number(initialScoreDef?.getAttribute('midi.bpm') ?? 120);
     meterCount = Number(initialScoreDef?.getAttribute('meter.count') ?? 4);
     meterUnit = Number(initialScoreDef?.getAttribute('meter.unit') ?? 4);
-
-    // Resolver: read attribute from the first element that defines it.
-    // Tolerates both the dotted MEI source style (`key.sig`) and
-    // Verovio's getMEI() normalization, which strips the dot on some
-    // attrs (key.sig → keysig) while leaving others (meter.count,
-    // clef.shape) intact. Returns null only when none of the
-    // candidates carry it under any spelling.
-    const read = (attrs: string | ReadonlyArray<string>, els: ReadonlyArray<Element | null | undefined>) => {
-      const names = typeof attrs === 'string' ? [attrs] : attrs;
-      for (const el of els) {
-        if (!el) continue;
-        for (const name of names) {
-          const v = el.getAttribute(name);
-          if (v !== null && v !== undefined) return v;
-        }
-      }
-      return null;
-    };
-
-    /** Pull (shape, line) for a single <staffDef> covering both styles:
-     *  attributes on the staffDef itself (`clef.shape`/`clef.line`) OR
-     *  a nested `<clef shape line>` element (Verovio's normalized MEI). */
-    const clefFromStaffDef = (
-      sd: Element | null | undefined,
-      fallback: ClefState,
-    ): ClefState => {
-      if (!sd) return fallback;
-      const childClef = sd.querySelector(':scope > clef');
-      const shape = sd.getAttribute('clef.shape') ?? childClef?.getAttribute('shape') ?? fallback.shape;
-      const line = sd.getAttribute('clef.line') ?? childClef?.getAttribute('line') ?? fallback.line;
-      return { shape, line };
-    };
-
-    /** Same for keysig: read attribute under either spelling
-     *  (key.sig | keysig) OR child `<keySig sig="…">`. Falls back to
-     *  the running value. */
-    const keysigFromStaffDef = (
-      sd: Element | null | undefined,
-      fallback: string,
-    ): string => {
-      if (!sd) return fallback;
-      const childKs = sd.querySelector(':scope > keySig');
-      return sd.getAttribute('key.sig')
-        ?? sd.getAttribute('keysig')
-        ?? childKs?.getAttribute('sig')
-        ?? fallback;
-    };
 
     // Walk the entire <staffGrp> tree to enumerate every leaf <staffDef>
     // in document order, and capture the brace/bracket symbol if present.
@@ -625,37 +582,6 @@ export async function renderScoreUncached(src: ScoreSource): Promise<Rendered> {
       staffGroup = { staves: collectedStaves, symbol: collectedSymbol };
     }
 
-    // Initial per-staff clef + (shared) keysig. Each staff's own
-    // <staffDef> wins; otherwise we fall back to the scoreDef-level
-    // attribute. For keysig the convention is shared-across-staves —
-    // we read whichever staff defines it first (typically all match).
-    const allStaffDefs = Array.from(initialStaffGrp?.querySelectorAll('staffDef') ?? []);
-    const staffDefByN = new Map<string, Element>();
-    for (const sd of allStaffDefs) {
-      const n = sd.getAttribute('n');
-      if (n) staffDefByN.set(n, sd);
-    }
-    const scoreDefClefFallback: ClefState = {
-      shape: read(['clef.shape', 'clefshape'], [initialScoreDef]) ?? 'G',
-      line: read(['clef.line', 'clefline'], [initialScoreDef]) ?? '2',
-    };
-    let clefs: ClefState[] = staffGroup.staves.map((s) =>
-      clefFromStaffDef(staffDefByN.get(s.n), scoreDefClefFallback),
-    );
-    let keysig = read(['key.sig', 'keysig'], [initialScoreDef]) ?? '0';
-    for (const sd of allStaffDefs) {
-      const ks = keysigFromStaffDef(sd, keysig);
-      if (ks !== '0' || keysig === '0') { keysig = ks; break; }
-    }
-    let meter: MeterState = {
-      count: meterCount,
-      unit: meterUnit,
-      sym: initialScoreDef?.querySelector(':scope > meterSig, :scope staffDef > meterSig')?.getAttribute('sym') ?? '',
-    };
-    headerEvents.push({
-      startMs: 0, measureIdx: 0,
-      clefs: clefs.map((c) => ({ ...c })), keysig, meter: { ...meter },
-    });
     // Synthetic initial tempo event (display "♩=BPM") is needed only
     // if measure 1 doesn't have its own <tempo> at tstamp=1 — otherwise
     // they'd both sit at startMs=0 and the synthetic would shadow the
@@ -688,6 +614,10 @@ export async function renderScoreUncached(src: ScoreSource): Promise<Rendered> {
 
     const meiOnsets: number[] = [];
     let totalMsManual = 0;  // running ms accumulator for manual measure starts
+    // Running meter — count is multiplied by msPerBeat to advance
+    // totalMsManual per measure, so mid-piece meter changes affect
+    // subsequent measure boundaries (and harm onsets that key off them).
+    let runMeterCount = meterCount;
     // Walk measures and mid-piece scoreDefs in document order, recursing
     // through any nesting. MusicXML→MEI conversion wraps the actual
     // measures in an inner <section> (with <expansion>/<pb> siblings at
@@ -711,7 +641,7 @@ export async function renderScoreUncached(src: ScoreSource): Promise<Rendered> {
       for (const child of walkMusicElements(scoreEl)) {
         if (child.localName === 'scoreDef' && !initialScoreDefSkipped) {
           // The first scoreDef is the top-level initial one, already
-          // processed above for clef/keysig/bpm. Skip it here.
+          // processed above for staff group / bpm / meter. Skip here.
           initialScoreDefSkipped = true;
           continue;
         }
@@ -734,7 +664,7 @@ export async function renderScoreUncached(src: ScoreSource): Promise<Rendered> {
           }
 
           const msPerBeat = 60000 / currentBpm;
-          const msPerMeasure = meter.count * msPerBeat;
+          const msPerMeasure = runMeterCount * msPerBeat;
           const measureStart = totalMsManual;
 
           for (const c of Array.from(child.children)) {
@@ -748,65 +678,22 @@ export async function renderScoreUncached(src: ScoreSource): Promise<Rendered> {
           continue;
         }
         if (child.localName !== 'scoreDef') continue;
-        // Mid-section scoreDef override. Three axes can change:
-        //   1. scoreDef-level `clef.shape` / `clef.line` / `key.sig` /
-        //      `meter.count` / `meter.unit` — applies to ALL staves.
-        //   2. Nested `<staffDef n="…">` — applies per-staff (multi-
-        //      staff pieces use this for one-hand clef changes).
-        //   3. Nested `<meterSig>` element — same change as
-        //      meter.count/unit attrs but in element form.
-        // We mutate `clefs` per-staff and treat `keysig`/`meter` as
-        // shared across staves (standard tonal/metric convention).
-        const nestedStaffDefs = Array.from(child.querySelectorAll(':scope > staffDef, :scope > staffGrp staffDef'));
-        const scoreDefShape = child.getAttribute('clef.shape') ?? child.getAttribute('clefshape');
-        const scoreDefLine = child.getAttribute('clef.line') ?? child.getAttribute('clefline');
-        const scoreDefKey = child.getAttribute('key.sig') ?? child.getAttribute('keysig');
+        // Mid-section scoreDef: pick up meter changes (so subsequent
+        // measures get the right msPerMeasure for harm onsets) and BPM
+        // changes (running tempo for the same calculation + tempo
+        // overlay). Clef/keysig changes here are deliberately ignored —
+        // the chrome overlay reads those off the rendered SVG.
         const scoreDefMeterCount = child.getAttribute('meter.count') ?? child.getAttribute('metercount');
-        const scoreDefMeterUnit = child.getAttribute('meter.unit') ?? child.getAttribute('meterunit');
         const meterSigEl = child.querySelector(':scope > meterSig, :scope staffDef > meterSig');
-        const nextClefs: ClefState[] = clefs.map((c) => ({ ...c }));
-        let nextKey = keysig;
-        const nextMeter: MeterState = { ...meter };
-        if (scoreDefShape || scoreDefLine) {
-          for (const c of nextClefs) {
-            if (scoreDefShape) c.shape = scoreDefShape;
-            if (scoreDefLine) c.line = scoreDefLine;
-          }
-        }
-        if (scoreDefKey !== null) nextKey = scoreDefKey;
-        if (scoreDefMeterCount !== null) nextMeter.count = Number(scoreDefMeterCount);
-        if (scoreDefMeterUnit !== null) nextMeter.unit = Number(scoreDefMeterUnit);
-        if (meterSigEl) {
+        if (scoreDefMeterCount !== null) {
+          const c = Number(scoreDefMeterCount);
+          if (Number.isFinite(c) && c > 0) runMeterCount = c;
+        } else if (meterSigEl) {
           const cnt = meterSigEl.getAttribute('count');
-          const u = meterSigEl.getAttribute('unit');
-          const sym = meterSigEl.getAttribute('sym');
-          if (cnt !== null) nextMeter.count = Number(cnt);
-          if (u !== null) nextMeter.unit = Number(u);
-          if (sym !== null) nextMeter.sym = sym;
-        }
-        for (const sd of nestedStaffDefs) {
-          const n = sd.getAttribute('n');
-          if (!n) continue;
-          const idx = staffGroup.staves.findIndex((s) => s.n === n);
-          if (idx < 0) continue;
-          nextClefs[idx] = clefFromStaffDef(sd, nextClefs[idx]);
-          const ks = keysigFromStaffDef(sd, nextKey);
-          if (ks !== nextKey) nextKey = ks;
-        }
-        const clefsChanged = nextClefs.some((c, i) =>
-          c.shape !== clefs[i].shape || c.line !== clefs[i].line,
-        );
-        const meterChanged = nextMeter.count !== meter.count
-          || nextMeter.unit !== meter.unit
-          || nextMeter.sym !== meter.sym;
-        if (clefsChanged || nextKey !== keysig || meterChanged) {
-          clefs = nextClefs;
-          keysig = nextKey;
-          meter = nextMeter;
-          headerEvents.push({
-            startMs: totalMsManual, measureIdx,
-            clefs: clefs.map((c) => ({ ...c })), keysig, meter: { ...meter },
-          });
+          if (cnt !== null) {
+            const c = Number(cnt);
+            if (Number.isFinite(c) && c > 0) runMeterCount = c;
+          }
         }
         const newBpm = bpmFromEl(child);
         if (newBpm && newBpm !== currentBpm) {
@@ -846,8 +733,7 @@ export async function renderScoreUncached(src: ScoreSource): Promise<Rendered> {
 
     // Ties: `<tie startid="#X" endid="#Y"/>` means the X note sustains
     // into Y without a re-attack. Extend X's audio range through Y,
-    // and mute Y in the audio scheduler. Visuals keep both notes so
-    // each glyph glows when its own beat is sounding.
+    // and mute Y in the audio scheduler.
     const notesById = new Map<string, Note>();
     for (const n of notes) notesById.set(n.id, n);
     for (const tie of Array.from(meiDoc.querySelectorAll('tie'))) {
@@ -867,7 +753,7 @@ export async function renderScoreUncached(src: ScoreSource): Promise<Rendered> {
   toolkit.destroy();
 
   return {
-    svg, notes, harms, anchors: [], headerEvents, tempoEvents,
+    svg, notes, harms, anchors: [], tempoEvents,
     meterCount, meterUnit, totalMs: maxTstamp, staffGroup,
   };
 }
@@ -1251,91 +1137,190 @@ function cloneMeasureShell(srcSvg: SVGSVGElement, measureIdx: number = 0): SVGSV
   return out;
 }
 
-/** Result bundle from `buildPannedShells`. */
-export interface PannedShellsResult {
-  shells: Map<string, SVGSVGElement>;
-  /** Right edge of the widest shell's chrome, in svg-rect-relative px.
-   *  Drives overlay/playhead/mask sizing — the overlay box has to reserve
-   *  enough room for the WIDEST keysig fingerprint so the playhead never
-   *  ends up sitting INSIDE a wide-keysig shell. */
+/**
+ * Frozen header overlay built from independent per-(staff, axis) tracks.
+ *
+ * Each track is a stack of cloned chrome elements (clefs, keysigs, or
+ * meters), one per distinct visual state the staff visits across the
+ * piece, all positioned at the same slot X under their staff. CSS
+ * opacity transitions handle the crossfade between layers; the render
+ * loop calls `setMs(ms)` each frame and each track binary-searches its
+ * own layers to find the active one.
+ *
+ * Why this beats the old shell-per-fingerprint approach:
+ *
+ *   • SOURCE OF TRUTH IS THE RENDERED SVG. Verovio decides whether a
+ *     given clef glyph is plain G (E050), 8va alta (E07A), 8vb (E07C),
+ *     or true bass F (E062) based on octave displacement state we don't
+ *     track in MEI. By cloning whatever Verovio drew, the overlay
+ *     always matches the pan visually — no MEI vs SVG drift, no need
+ *     to model `dis`/`disPlace` separately.
+ *
+ *   • NO FINGERPRINT COLLISIONS. Two events with `clefs=[G2,G2,G2]` in
+ *     the MEI but different rendered glyph variants used to collide
+ *     under one shell with one set of glyphs (the ones Verovio happened
+ *     to draw at the source measure we picked). Per-axis tracks dedupe
+ *     by *visual content*, not by MEI metadata.
+ *
+ *   • PER-STAFF INDEPENDENCE. A clef change on staff 1 doesn't trigger
+ *     an opacity swap on staves 0 and 2. Each axis × staff fades
+ *     independently when its own state crosses the playhead.
+ *
+ * Build is single-pass over `pan.querySelectorAll('.measure')`: for each
+ * measure, for each (staff, axis), if Verovio rendered a chrome element
+ * AND its glyph signature differs from the previous layer in this
+ * track, push a new layer. Layer 0 is m1's chrome (already in the
+ * shell skeleton). All later layers are cloned and X-translated to the
+ * track's slot.
+ */
+export interface ChromeOverlay {
+  host: HTMLDivElement;
+  /** Update which layer of every track is `.is-current`. Cheap — each
+   *  track does a binary search over its own (typically <20) layers.
+   *  Class toggles only happen when the current layer actually changes,
+   *  so steady-state ms updates are no-ops once classes are set. */
+  setMs(ms: number): void;
+  /** Right edge of the widest chrome content (panRect-relative px).
+   *  Drives overlay/playhead/mask sizing — the overlay reserves room
+   *  for the widest keysig that appears anywhere in the piece so the
+   *  playhead never lands inside a chrome glyph. */
   maxChromeRight: number;
 }
 
+interface ChromeLayer {
+  el: SVGGElement;
+  /** ms when this layer becomes the active one for its track. The first
+   *  layer in a track typically has activeFrom=0 (m1's initial state).
+   *  Computed via msAtX of the source element's pan-x so the swap fires
+   *  when the visual change crosses the playhead. */
+  activeFrom: number;
+}
+
+/** One independent crossfade lane for a single (staff, axis) combination.
+ *  Owns its layer DOM clones; toggles `.is-current` on the active one.
+ *  Optional `onActivate` lets a separate axis react to this one's swaps —
+ *  used so the meter slot can re-translate itself based on the active
+ *  keysig's width when the keysig track switches layers. */
+class ChromeTrack {
+  readonly layers: ChromeLayer[];
+  private currentIdx = -1;
+  onActivate?: (layerIdx: number) => void;
+
+  constructor(layers: ChromeLayer[]) {
+    // Sorted ascending by activeFrom in build order (we walk measures
+    // forward); explicit sort is a cheap safety net.
+    this.layers = layers.slice().sort((a, b) => a.activeFrom - b.activeFrom);
+  }
+
+  /** Find the layer with the largest activeFrom ≤ ms. Returns -1 when
+   *  ms precedes every layer (i.e. this track has no active state yet
+   *  — a keysig that doesn't appear until measure 5 will return -1
+   *  for ms < its activeFrom, leaving every layer at opacity 0 which
+   *  is the desired "no keysig drawn" state). */
+  setActiveAt(ms: number): void {
+    let lo = 0, hi = this.layers.length - 1, found = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.layers[mid].activeFrom <= ms) {
+        found = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    if (found === this.currentIdx) return;
+    if (this.currentIdx >= 0) this.layers[this.currentIdx].el.classList.remove('is-current');
+    if (found >= 0) this.layers[found].el.classList.add('is-current');
+    this.currentIdx = found;
+    this.onActivate?.(found);
+  }
+}
+
+/** Pull the (x, y) translate component out of a transform string like
+ *  `translate(123, 456) scale(0.7, 0.7)`. Returns null if no translate
+ *  is found — caller falls back to leaving the clone untouched. */
+function parseTranslate(transform: string | null): { x: number; y: number } | null {
+  if (!transform) return null;
+  const m = /translate\(\s*(-?[\d.]+)[ ,]+(-?[\d.]+)/.exec(transform);
+  if (!m) return null;
+  return { x: parseFloat(m[1]), y: parseFloat(m[2]) };
+}
+
+/** Tag a clone with our additional translate while preserving any
+ *  intrinsic transform Verovio gave it. `dxUnits` is in def-scale
+ *  internal units (the same coord system the cloned `transform=`
+ *  attribute uses). */
+function prependTranslate(el: Element, dxUnits: number) {
+  if (Math.abs(dxUnits) < 0.5) return;
+  const existing = el.getAttribute('transform') ?? '';
+  const offset = `translate(${dxUnits}, 0)`;
+  el.setAttribute('transform', existing ? `${offset} ${existing}` : offset);
+}
+
+/** Read a chrome element's "visual signature" — the joined list of
+ *  symbol references its `<use>` children point at. Two elements with
+ *  identical signatures render identically; we use this to dedupe
+ *  consecutive layers. Cancel naturals (E261) are stripped from the
+ *  signature so a transitional keysig glyph that includes "cancel
+ *  previous" naturals reads the same as the stable one without them. */
+function chromeSignature(el: Element | null): string {
+  if (!el) return '';
+  const parts: string[] = [];
+  for (const u of Array.from(el.querySelectorAll('use'))) {
+    const href = u.getAttribute('xlink:href') ?? u.getAttribute('href') ?? '';
+    if (href.includes('E261')) continue;
+    parts.push(href);
+  }
+  return parts.join(',');
+}
+
 /**
- * Build a shell for every unique header fingerprint by COMPOSITING from
- * pan glyphs and reflowing the chrome layout.
+ * Build the chrome overlay by walking the rendered pan SVG once and
+ * snapshotting per-(staff, axis) state changes into ChromeTrack stacks.
  *
- * Layout rule (the only one):
- *   For every shell, place chrome elements left-to-right with a fixed
- *   padding `pad` (derived once from m1's natural Verovio spacing):
- *     clef   at  m1.clef position             (constant across all fps)
- *     keysig at  clef.right + pad             (only when fp.keysig != 0)
- *     meter  at  keysig.right + pad           (or clef.right + pad if no keysig)
+ * Layout uses two pre-computed values from m1's natural Verovio layout:
+ *   • `padDisplay` — the gap between adjacent chrome elements (clef→
+ *     keysig and keysig→meter). Derived from m1's actual element
+ *     positions.
+ *   • `maxKeysigWidth` — the widest keysig glyph that appears anywhere
+ *     in the piece. The meter slot is pinned at `clefRight + pad +
+ *     maxKeysigWidth + pad` so the meter never overlaps with a wider
+ *     keysig that arrives later (handles the all-keys 0→7 sharp
+ *     stress test cleanly).
  *
- *   Each fp's meter therefore "adapts" to the keysig width — a wide
- *   7-sharp keysig pushes the meter further right than a 0-keysig fp
- *   does. The overlay box is sized for the WIDEST chrome (returned via
- *   `maxChromeRight`) so the playhead never collides with any fp.
- *
- * Why this composite/reflow approach:
- *   Verovio's natural layout in m1 is computed for m1's specific keysig
- *   width — when we swap in a wider keysig, m1's slot is too narrow and
- *   adjacent elements collide. Rather than try to match Verovio's
- *   internal padding rules per-fp, we DO our own layout pass with one
- *   derived padding constant. Verovio's internal glyph layout WITHIN
- *   each axis (sharp positions inside a keysig, digit stacking inside
- *   a meter) is preserved untouched — we only translate the axis as a
- *   unit.
- *
- * Cancel naturals (E261 SMuFL codepoint) inside a swapped keysig are
- * stripped — frozen overlay shows the STABLE keysig only. Cancel
- * naturals are visible in pan as the change measure scrolls past, and
- * don't belong in the static chrome.
- *
- * The first tile (or the unsliced single SVG) must still have its
- * measure-1 chrome intact — call this BEFORE `stripHeadersFrom`. For
- * sliced layouts, mid-piece source measures live in later tiles, so
- * `pan` is walked for the full `.measure` set; the shell template +
- * defs come from `tile0`.
+ * Cancel-natural accidentals (SMuFL E261) inside any cloned keysig
+ * layer are stripped — they're transitional glyphs that belong in the
+ * pan as the change scrolls past, not in the static chrome.
  */
-export function buildPannedShells(
+export function buildChromeOverlay(
   pan: HTMLElement,
   tile0: SVGSVGElement,
-  events: ReadonlyArray<HeaderEvent>,
   panRect: DOMRect,
-): PannedShellsResult {
-  const shells = new Map<string, SVGSVGElement>();
-  let maxChromeRight = 0;
-  if (events.length === 0) return { shells, maxChromeRight };
-  // Walk pan to capture measures across tiles in document order.
+  msAtX: (x: number) => number,
+): ChromeOverlay | null {
   const measures = pan.querySelectorAll('.measure');
   const m1 = measures[0];
-  if (!m1) return { shells, maxChromeRight };
+  if (!m1) return null;
 
-  // Verovio nests the actual glyph drawing in `<svg class="definition-scale">`
-  // whose internal viewBox is ~25× larger than the outer SVG's viewBox —
-  // every chrome glyph's `<use transform="translate(...)">` is in THIS
-  // internal coord space, not the outer one. To shift a swapped glyph by
-  // a measured display-px delta, we convert via the def-scale viewBox →
-  // pan display ratio (def_scale_units_per_display_px). Tile 0's
-  // defScale carries the same viewBox as the source so this ratio is
-  // identical whether we sliced or not.
   const defScale = tile0.querySelector('svg.definition-scale') as SVGSVGElement | null;
-  if (!defScale || panRect.width <= 0) return { shells, maxChromeRight };
+  if (!defScale || panRect.width <= 0) return null;
   const defVB = defScale.viewBox.baseVal;
-  if (defVB.width <= 0 || defVB.height <= 0) return { shells, maxChromeRight };
+  if (defVB.width <= 0 || defVB.height <= 0) return null;
   const defScalePerPxX = defVB.width / panRect.width;
 
-  const m1Staves = Array.from(m1.querySelectorAll('.staff'));
+  const shell = cloneMeasureShell(tile0, 0);
+  if (!shell) return null;
 
-  // Derive chrome inter-element padding from m1's natural Verovio layout
-  // (first staff). Used when reflowing each shell so the keysig-meter
-  // and clef-keysig gaps stay visually consistent with what Verovio would
-  // have done. Two derivations:
-  //   • m1 has populated keysig: pad = m1's actual clef-keysig gap
-  //   • m1 has empty keysig:     pad = (clef-meter distance) / 2
-  // The single value is reused on both sides; tonal music's chrome
-  // padding is symmetric enough that one number suffices.
+  const m1Staves = Array.from(m1.querySelectorAll('.staff'));
+  const shellStaves = Array.from(shell.querySelectorAll('.staff'));
+  const limit = Math.min(shellStaves.length, m1Staves.length);
+  if (limit === 0) return null;
+
+  // Inter-element padding from m1's first staff. Two derivations:
+  //   • m1 has a populated keysig: pad = m1's actual clef→keysig gap.
+  //   • m1 has no keysig: pad = (clef→meter distance) / 2.
+  // Tonal music's chrome padding is symmetric enough that one number
+  // suffices for both clef→keysig and keysig→meter.
   let padDisplay = 0;
   {
     const m1Clef = m1Staves[0]?.querySelector('.clef');
@@ -1353,156 +1338,291 @@ export function buildPannedShells(
     }
   }
 
-  // Walk events forward, tracking for each axis the measureIdx where
-  // that axis was last set to its current value. When we encounter a
-  // not-yet-seen fingerprint, snapshot those source-measure indices
-  // and use them to compose the shell.
-  let prev: HeaderEvent | null = null;
-  let clefSourceMi = 0;
-  let keysigSourceMi = 0;
-  let meterSourceMi = 0;
-  const seen = new Set<string>();
-
-  /** Tag a clone with our additional translate while preserving any
-   *  intrinsic transform Verovio gave it. */
-  const prependTranslate = (el: Element, dxUnits: number) => {
-    if (Math.abs(dxUnits) < 0.5) return;
-    const existing = el.getAttribute('transform') ?? '';
-    const offset = `translate(${dxUnits}, 0)`;
-    el.setAttribute('transform', existing ? `${offset} ${existing}` : offset);
-  };
-
-  for (const e of events) {
-    if (prev) {
-      const clefDiff = e.clefs.some((c, i) =>
-        c.shape !== prev!.clefs[i]?.shape || c.line !== prev!.clefs[i]?.line);
-      if (clefDiff) clefSourceMi = e.measureIdx;
-      if (e.keysig !== prev.keysig) keysigSourceMi = e.measureIdx;
-      const meterDiff =
-        e.meter.count !== prev.meter.count ||
-        e.meter.unit !== prev.meter.unit ||
-        e.meter.sym !== prev.meter.sym;
-      if (meterDiff) meterSourceMi = e.measureIdx;
+  // Pre-scan: widest keysig and meter anywhere. The keysig width is
+  // what the meter slot can grow up to before bumping the right edge
+  // of the overlay; the meter width is added on top to size the
+  // overlay's reserved chrome region. Note: the meter's actual X
+  // position SLIDES with each active keysig (see meterSlot below) so
+  // the chrome stays tight, but the OVERLAY box has to be wide enough
+  // for the worst-case (widest keysig + widest meter) so the playhead
+  // never lands inside chrome at any point in the piece.
+  let maxKeysigWidth = 0;
+  let maxMeterWidth = 0;
+  for (const m of Array.from(measures)) {
+    for (const ks of Array.from(m.querySelectorAll('.keySig'))) {
+      const w = ks.getBoundingClientRect().width;
+      if (w > maxKeysigWidth) maxKeysigWidth = w;
     }
-    prev = e;
+    for (const mt of Array.from(m.querySelectorAll('.meterSig'))) {
+      const w = mt.getBoundingClientRect().width;
+      if (w > maxMeterWidth) maxMeterWidth = w;
+    }
+  }
 
-    const fp = headerFingerprint(e);
-    if (seen.has(fp)) continue;
-    seen.add(fp);
+  const tracks: ChromeTrack[] = [];
+  let maxChromeRight = 0;
 
-    const shell = cloneMeasureShell(tile0, 0);
-    if (!shell) continue;
+  for (let i = 0; i < limit; i++) {
+    const m1ClefEl = m1Staves[i].querySelector('.clef');
+    const m1KsEl = m1Staves[i].querySelector('.keySig');
+    const m1MeterEl = m1Staves[i].querySelector('.meterSig');
+    const shellStaff = shellStaves[i];
+    if (!m1ClefEl) continue;
+    // Forward decl: keysig track is built before the meter track so the
+    // meter setup can install its `onActivate` callback (we slide the
+    // meter slot when a keysig swap changes the keysig's visible width).
+    let keysigTrack: ChromeTrack | null = null;
 
-    const shellStaves = Array.from(shell.querySelectorAll('.staff'));
-    const limit = Math.min(shellStaves.length, m1Staves.length);
-    let shellChromeRight = 0;
+    const m1ClefRect = m1ClefEl.getBoundingClientRect();
+    const clefSlotLeftSvg = m1ClefRect.left - panRect.left;
+    const clefRightSvg = m1ClefRect.right - panRect.left;
+    const ksSlotLeftSvg = clefRightSvg + padDisplay;
+    const meterSlotLeftSvg = ksSlotLeftSvg + maxKeysigWidth + padDisplay;
 
-    for (let i = 0; i < limit; i++) {
-      const m1ClefEl = m1Staves[i].querySelector('.clef');
-      const m1MeterEl = m1Staves[i].querySelector('.meterSig');
-      const shellClefEl = shellStaves[i].querySelector('.clef');
-      const shellKsEl = shellStaves[i].querySelector('.keySig');
-      const shellMeterEl = shellStaves[i].querySelector('.meterSig');
-      if (!m1ClefEl) continue;
+    const m1ClefUseTranslate = parseTranslate(
+      m1ClefEl.querySelector('use')?.getAttribute('transform') ?? null,
+    );
 
-      // ── CLEF ────────────────────────────────────────────────────────
-      // Clef goes at m1's natural position. If clef changes mid-piece,
-      // swap in the source clef glyph translated to m1.clef's position.
-      // Clef widths are uniform enough across G/F/C clefs that we don't
-      // reflow keysig+meter to accommodate width deltas — the small
-      // fudge is invisible in practice.
-      const m1ClefRect = m1ClefEl.getBoundingClientRect();
-      let clefRightSvg = m1ClefRect.right - panRect.left;
-      if (clefSourceMi !== 0) {
-        const sourceClefEl = measures[clefSourceMi]?.querySelectorAll('.staff')[i]?.querySelector('.clef');
-        const sourceClefRect = sourceClefEl?.getBoundingClientRect();
-        if (sourceClefEl && sourceClefRect && sourceClefRect.width > 0 && shellClefEl?.parentNode) {
-          const dxDisplay = m1ClefRect.left - sourceClefRect.left;
-          const newClef = sourceClefEl.cloneNode(true) as Element;
-          prependTranslate(newClef, dxDisplay * defScalePerPxX);
-          shellClefEl.parentNode.replaceChild(newClef, shellClefEl);
-          // Recompute right edge using source clef's width post-shift.
-          clefRightSvg = (m1ClefRect.left - panRect.left) + sourceClefRect.width;
+    // ── CLEF TRACK ──────────────────────────────────────────────────
+    {
+      const layers: ChromeLayer[] = [];
+      const shellClefEl = shellStaff.querySelector('.clef') as SVGGElement | null;
+      let lastSig = chromeSignature(m1ClefEl);
+      if (shellClefEl) {
+        layers.push({ el: shellClefEl, activeFrom: 0 });
+      }
+      for (let mi = 1; mi < measures.length; mi++) {
+        const measureStaff = measures[mi].querySelectorAll('.staff')[i];
+        if (!measureStaff) continue;
+        // Walk EVERY `<g class="clef">` inside this measure's staff in
+        // document order, not just the first. Verovio routinely emits
+        // multiple clef glyphs per measure: a start-of-measure change
+        // glyph, then a mid-measure change inside a `<beam>` (Ravel's
+        // Jeux d'eau hits ~10 measures with two distinct clef states
+        // back-to-back). A single `querySelector('.clef')` would lock
+        // onto the first and miss every later swap, leaving the
+        // overlay stuck on a stale glyph for the rest of the piece.
+        for (const clefEl of Array.from(measureStaff.querySelectorAll('.clef'))) {
+          const sig = chromeSignature(clefEl);
+          // Empty signature means a `<clef sameas="…">` reference
+          // without its own `<use>` glyph — Verovio's marker that the
+          // running state continues; nothing visible to swap to. Skip.
+          if (!sig || sig === lastSig) continue;
+          lastSig = sig;
+
+          const cloned = clefEl.cloneNode(true) as SVGGElement;
+          const clonedUse = cloned.querySelector('use');
+          const clonedTranslate = parseTranslate(
+            clonedUse?.getAttribute('transform') ?? null,
+          );
+          if (clonedUse && m1ClefUseTranslate && clonedTranslate) {
+            // Pin X to m1's clef slot; keep source's Y so glyph
+            // baseline (E050 G vs E07C 8vb vs E062 F) sits correctly.
+            const t = clonedUse.getAttribute('transform') ?? '';
+            clonedUse.setAttribute(
+              'transform',
+              t.replace(/translate\([^)]*\)/, `translate(${m1ClefUseTranslate.x}, ${clonedTranslate.y})`),
+            );
+          }
+          const cr = clefEl.getBoundingClientRect();
+          const cx = (cr.left + cr.width / 2) - panRect.left;
+          layers.push({ el: cloned, activeFrom: msAtX(cx) });
+          shellStaff.appendChild(cloned);
         }
       }
+      tracks.push(new ChromeTrack(layers));
+      const clefRight = clefSlotLeftSvg + m1ClefRect.width;
+      if (clefRight > maxChromeRight) maxChromeRight = clefRight;
+    }
 
-      // ── KEYSIG ──────────────────────────────────────────────────────
-      // Place at clef.right + pad. For empty fp (keysig=0), strip the
-      // shell's existing keysig element. Otherwise clone the source
-      // measure's keysig, strip cancel naturals, translate to target.
-      let keysigRightSvg = clefRightSvg;
-      if (e.keysig === '0') {
-        if (shellKsEl?.parentNode) shellKsEl.parentNode.removeChild(shellKsEl);
-      } else {
-        const sourceMeasure = keysigSourceMi === 0 ? m1 : measures[keysigSourceMi];
-        const sourceKs = sourceMeasure?.querySelectorAll('.staff')[i]?.querySelector('.keySig');
-        const sourceKsRect = sourceKs?.getBoundingClientRect();
-        if (sourceKs && sourceKsRect && sourceKsRect.width > 0) {
-          const newKs = sourceKs.cloneNode(true) as Element;
-          // Strip cancel naturals (SMuFL natural-sign codepoint E261).
-          // Frozen overlay shows the STABLE keysig only — naturals from
-          // mid-piece transitions are visible in pan as the change
-          // measure scrolls past, and would just clutter the chrome.
-          for (const acc of Array.from(newKs.querySelectorAll('.keyAccid'))) {
+    // ── KEYSIG TRACK ────────────────────────────────────────────────
+    // Layer 0 is m1's keysig if it has one; otherwise track starts
+    // empty and remains empty until a non-zero keysig measure appears
+    // mid-piece. Before any layer's activeFrom, every clone is at
+    // opacity 0 (no .is-current) — the desired "no keysig" visual.
+    //
+    // Per-layer width (in display px) is captured so the meter track
+    // can reposition itself based on the active keysig: a 0-sharp
+    // layer shows the meter tucked right after the clef, a 7-sharp
+    // layer pushes it ~80px further right. Indexed by layer position
+    // (and `[-1]` for "no keysig active yet" handled inline below).
+    const ksLayerWidths: number[] = [];
+    let m1KsWidth = 0;
+    {
+      const layers: ChromeLayer[] = [];
+      const shellKsEl = shellStaff.querySelector('.keySig') as SVGGElement | null;
+      let lastSig = chromeSignature(m1KsEl);
+      if (shellKsEl) {
+        const m1KsRect = m1KsEl?.getBoundingClientRect();
+        if (m1KsRect && m1KsRect.width > 0 && lastSig) {
+          // m1's keysig is already in the shell at its natural Verovio
+          // position. The slot anchor (clefRight + pad) is derived
+          // from m1's own clef-keysig gap, so dx is effectively zero
+          // and prependTranslate is a no-op — but compute and apply
+          // it anyway in case Verovio's m1 layout has a sub-pixel
+          // mismatch from the pad approximation.
+          const dxDisplay = ksSlotLeftSvg - (m1KsRect.left - panRect.left);
+          prependTranslate(shellKsEl, dxDisplay * defScalePerPxX);
+          layers.push({ el: shellKsEl, activeFrom: 0 });
+          m1KsWidth = m1KsRect.width;
+          ksLayerWidths.push(m1KsRect.width);
+        } else {
+          // Empty placeholder from cloneMeasureShell; remove so it
+          // doesn't accidentally shadow later layers via stacking.
+          shellKsEl.parentNode?.removeChild(shellKsEl);
+          lastSig = '';
+        }
+      }
+      for (let mi = 1; mi < measures.length; mi++) {
+        const measureStaff = measures[mi].querySelectorAll('.staff')[i];
+        if (!measureStaff) continue;
+        // Walk every `<g class="keySig">` in this measure's staff in
+        // document order. Same rationale as the clef loop: Verovio can
+        // emit multiple keysig glyphs per measure (e.g. a cancel-only
+        // glyph at the start, then the new keysig later), and missing
+        // any of them strands the overlay on a stale signature.
+        for (const ksEl of Array.from(measureStaff.querySelectorAll('.keySig'))) {
+          const sig = chromeSignature(ksEl);
+          if (sig === lastSig) continue;
+          lastSig = sig;
+          const cloned = ksEl.cloneNode(true) as SVGGElement;
+          // Strip cancel naturals (SMuFL E261) — frozen overlay shows
+          // the STABLE keysig only; transitional naturals are visible
+          // in the pan as the change measure scrolls past.
+          for (const acc of Array.from(cloned.querySelectorAll('.keyAccid'))) {
             const u = acc.querySelector('use');
             const href = u?.getAttribute('xlink:href') ?? u?.getAttribute('href') ?? '';
             if (href.includes('E261')) acc.remove();
           }
-          const targetLeftSvg = clefRightSvg + padDisplay;
-          const dxDisplay = targetLeftSvg - (sourceKsRect.left - panRect.left);
-          prependTranslate(newKs, dxDisplay * defScalePerPxX);
-          if (shellKsEl?.parentNode) {
-            shellKsEl.parentNode.replaceChild(newKs, shellKsEl);
-          } else if (shellMeterEl?.parentNode) {
-            shellMeterEl.parentNode.insertBefore(newKs, shellMeterEl);
-          } else {
-            shellStaves[i].appendChild(newKs);
-          }
-          // Width estimate uses source rect (may slightly over-allocate
-          // when naturals were stripped, but they're stripped GLYPHS so
-          // the visible content is narrower than this — the over-
-          // allocation just leaves a hair more space before the meter).
-          keysigRightSvg = targetLeftSvg + sourceKsRect.width;
+          const ksRect = ksEl.getBoundingClientRect();
+          const dxDisplay = ksSlotLeftSvg - (ksRect.left - panRect.left);
+          prependTranslate(cloned, dxDisplay * defScalePerPxX);
+          const cx = (ksRect.left + ksRect.width / 2) - panRect.left;
+          layers.push({ el: cloned, activeFrom: msAtX(cx) });
+          shellStaff.appendChild(cloned);
+          // After-strip width: source bounding rect counts cancel
+          // naturals we just removed, so shrink by that count's worth.
+          const sourceCount = ksEl.querySelectorAll('.keyAccid').length || 1;
+          const survived = cloned.querySelectorAll('.keyAccid').length;
+          ksLayerWidths.push(ksRect.width * (survived / sourceCount));
         }
       }
-
-      // ── METER ───────────────────────────────────────────────────────
-      // Position immediately after keysig (or clef when no keysig).
-      // Always re-position even when meter source = m1: the pad-derived
-      // target may differ from m1's natural meter.left when keysig is
-      // wider/narrower than m1's. For meter changes, swap in the source
-      // meter glyph THEN apply the position translate.
-      if (m1MeterEl && shellMeterEl) {
-        const m1MeterRect = m1MeterEl.getBoundingClientRect();
-        let activeMeterEl: Element = shellMeterEl;
-        let activeMeterWidth = m1MeterRect.width;
-        let activeMeterNaturalLeftSvg = m1MeterRect.left - panRect.left;
-        if (meterSourceMi !== 0) {
-          const sourceMeterEl = measures[meterSourceMi]?.querySelectorAll('.staff')[i]?.querySelector('.meterSig');
-          const sourceMeterRect = sourceMeterEl?.getBoundingClientRect();
-          if (sourceMeterEl && sourceMeterRect && sourceMeterRect.width > 0 && shellMeterEl.parentNode) {
-            const newMeter = sourceMeterEl.cloneNode(true) as Element;
-            shellMeterEl.parentNode.replaceChild(newMeter, shellMeterEl);
-            activeMeterEl = newMeter;
-            activeMeterWidth = sourceMeterRect.width;
-            activeMeterNaturalLeftSvg = sourceMeterRect.left - panRect.left;
-          }
-        }
-        const targetMeterLeftSvg = keysigRightSvg + (e.keysig === '0' ? padDisplay : padDisplay);
-        const dxDisplay = targetMeterLeftSvg - activeMeterNaturalLeftSvg;
-        prependTranslate(activeMeterEl, dxDisplay * defScalePerPxX);
-        const meterRightSvg = targetMeterLeftSvg + activeMeterWidth;
-        if (meterRightSvg > shellChromeRight) shellChromeRight = meterRightSvg;
-      } else {
-        if (keysigRightSvg > shellChromeRight) shellChromeRight = keysigRightSvg;
-      }
+      keysigTrack = new ChromeTrack(layers);
+      tracks.push(keysigTrack);
+      const ksRight = ksSlotLeftSvg + maxKeysigWidth;
+      if (ksRight > maxChromeRight) maxChromeRight = ksRight;
     }
 
-    if (shellChromeRight > maxChromeRight) maxChromeRight = shellChromeRight;
-    shells.set(fp, shell);
+    // ── METER TRACK ─────────────────────────────────────────────────
+    // All meter layers are normalized to m1's natural meter X. A
+    // wrapper `<g class="meter-slot">` then translates the whole stack
+    // based on the active keysig: when the keysig narrows or widens,
+    // the slot slides so the meter sits a constant pad past the keysig
+    // — no fixed reservation for the widest keysig, no jump on swap.
+    // (Verovio's natural m1.meter.x already factors in m1's keysig
+    // width, so the reference is `m1.keysig.width`; layers with a
+    // wider keysig push the slot right, narrower ones pull it left,
+    // and "no keysig" pulls it back to the no-keysig position.)
+    const meterSlot = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    meterSlot.setAttribute('class', 'meter-slot');
+    {
+      const layers: ChromeLayer[] = [];
+      const shellMeterEl = shellStaff.querySelector('.meterSig') as SVGGElement | null;
+      let lastSig = chromeSignature(m1MeterEl);
+      if (shellMeterEl && m1MeterEl) {
+        // Layer 0 = m1's meter element, already at m1's natural X. Move
+        // it from its current position in shellStaff into meterSlot.
+        shellMeterEl.parentNode?.removeChild(shellMeterEl);
+        meterSlot.appendChild(shellMeterEl);
+        layers.push({ el: shellMeterEl, activeFrom: 0 });
+      }
+      // Pull m1's meter `<use>` internal-x as the alignment target. All
+      // meter clones get translated so their `<use>` lands at this same
+      // internal x, by computing dx purely in INTERNAL coords — never
+      // round-tripping through display px. Why: in a sliced layout
+      // each tile owns its own outer-SVG viewBox with a slightly
+      // different per-tile internal-to-display ratio, so a `dxDisplay
+      // × global_ratio` calculation that crosses tiles drifts by
+      // ~15 px, enough to shove the cloned meter back onto the
+      // keysig's rightmost accidental and visually swallow it.
+      const m1MeterUseInternalX = m1MeterEl
+        ? parseTranslate(
+            m1MeterEl.querySelector('use')?.getAttribute('transform') ?? null,
+          )?.x
+        : null;
+      for (let mi = 1; mi < measures.length; mi++) {
+        const measureStaff = measures[mi].querySelectorAll('.staff')[i];
+        if (!measureStaff) continue;
+        // Same multi-glyph walk as clef + keysig — see comment there.
+        for (const mtrEl of Array.from(measureStaff.querySelectorAll('.meterSig'))) {
+          const sig = chromeSignature(mtrEl);
+          if (sig === lastSig) continue;
+          lastSig = sig;
+          const cloned = mtrEl.cloneNode(true) as SVGGElement;
+          // Shift the whole cloned `<g class="meterSig">` so its `<use>`
+          // children (numerator + denominator stacked at the same x
+          // but different y) land at m1's meter internal-x. Translating
+          // the parent group keeps both digits in sync — rewriting
+          // just the first `<use>` would strand the denominator at the
+          // source measure's x.
+          const sourceUseInternalX = parseTranslate(
+            cloned.querySelector('use')?.getAttribute('transform') ?? null,
+          )?.x;
+          if (m1MeterUseInternalX !== null && m1MeterUseInternalX !== undefined &&
+              sourceUseInternalX !== undefined) {
+            prependTranslate(cloned, m1MeterUseInternalX - sourceUseInternalX);
+          }
+          const mtrRect = mtrEl.getBoundingClientRect();
+          const cx = (mtrRect.left + mtrRect.width / 2) - panRect.left;
+          layers.push({ el: cloned, activeFrom: msAtX(cx) });
+          meterSlot.appendChild(cloned);
+        }
+      }
+      shellStaff.appendChild(meterSlot);
+      tracks.push(new ChromeTrack(layers));
+      const meterRight = meterSlotLeftSvg + maxMeterWidth;
+      if (meterRight > maxChromeRight) maxChromeRight = meterRight;
+
+      // Wire keysig-track activations to slide the meter slot. Internal
+      // units (defScalePerPxX × display delta) because the slot lives
+      // inside the def-scale coord space. `idx === -1` means no keysig
+      // is currently active (track hasn't started yet), in which case
+      // the meter sits where m1 had it (slot delta 0 — m1 may itself
+      // have had no keysig, in which case m1's meter X already reflects
+      // the no-keysig layout). For idx ≥ 0, slide by `(layerWidth -
+      // m1KsWidth) × defScalePerPxX`.
+      if (keysigTrack) {
+        keysigTrack.onActivate = (idx: number) => {
+          const widthDeltaDisplay =
+            idx >= 0 ? (ksLayerWidths[idx] ?? 0) - m1KsWidth : 0;
+          if (Math.abs(widthDeltaDisplay) < 0.5) {
+            meterSlot.removeAttribute('transform');
+          } else {
+            meterSlot.setAttribute(
+              'transform',
+              `translate(${widthDeltaDisplay * defScalePerPxX}, 0)`,
+            );
+          }
+        };
+      }
+    }
   }
-  return { shells, maxChromeRight };
+
+  const host = document.createElement('div');
+  host.className = 'score-frozen-overlay';
+  host.appendChild(shell);
+  // Initial state: every track's first layer (if any) becomes current.
+  for (const tr of tracks) tr.setActiveAt(0);
+
+  return {
+    host,
+    setMs(ms: number) {
+      for (const tr of tracks) tr.setActiveAt(ms);
+    },
+    maxChromeRight,
+  };
 }
+
 
 /** Tempo overlay — a single text node showing the active tempo marking.
  *  Updates via `setCurrent(event)`; CSS handles the opacity crossfade.
@@ -1537,40 +1657,6 @@ export function createTempoOverlay(
   };
 }
 
-/** Frozen header overlay + the only API for updating it: `setCurrent(fp)`
- *  flips which shell is visible. Keeps the shell-per-layer DOM structure
- *  an implementation detail of this function. Returns null if no shells
- *  could be built. */
-export function createFrozenOverlay(
-  shells: Map<string, SVGSVGElement>,
-  initialFingerprint: string,
-  overlayWidth: number,
-): FrozenOverlay | null {
-  if (shells.size === 0) return null;
-  const host = document.createElement('div');
-  host.className = 'score-frozen-overlay';
-  host.style.width = `${overlayWidth}px`;
-  const layers = new Map<string, HTMLDivElement>();
-  for (const [fp, shell] of shells) {
-    const layer = document.createElement('div');
-    layer.className = 'score-frozen-shell';
-    layer.setAttribute('data-fp', fp);
-    if (fp === initialFingerprint) layer.classList.add('is-current');
-    layer.appendChild(shell);
-    host.appendChild(layer);
-    layers.set(fp, layer);
-  }
-  let current = initialFingerprint;
-  return {
-    host,
-    setCurrent(fingerprint: string) {
-      if (fingerprint === current) return;
-      layers.get(current)?.classList.remove('is-current');
-      layers.get(fingerprint)?.classList.add('is-current');
-      current = fingerprint;
-    },
-  };
-}
 
 /** Measured y-midlines (stage-relative px) of EVERY staff's 5 lines.
  *  Multi-staff pieces (piano grand staff = 2; orchestral = N) need lines
@@ -1590,10 +1676,15 @@ export function measureStaffYs(staves: ArrayLike<Element>, stageTop: number): nu
   return ys;
 }
 
-/** A stage-wide SVG with 5 horizontal lines at the given y-positions.
- *  Single source of staff lines — prevents the double-stroke thickening
- *  that happened when pan and overlay both drew them. */
-export function createStaffLinesLayer(ys: number[], stageRect: DOMRect): SVGSVGElement | null {
+/** A stage-wide SVG with 5 horizontal lines per staff at the given
+ *  y-positions. Single source of staff lines — prevents the
+ *  double-stroke thickening that happened when pan and overlay both
+ *  drew them. Color comes from CSS (`--fg-dim`) so all lines render at
+ *  the same recede-into-background gray. */
+export function createStaffLinesLayer(
+  ys: number[],
+  stageRect: DOMRect,
+): SVGSVGElement | null {
   if (ys.length === 0) return null;
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('class', 'score-staff-lines');
@@ -1713,145 +1804,9 @@ function eventAtMs<T extends { startMs: number }>(
   return e;
 }
 
-/** Stateful cursor over a startMs-sorted item list that maintains
- *  the current set of "live" items (startMs ≤ ms < endMs) without
- *  re-scanning every frame. Per frame we just advance the start /
- *  expire pointers based on `ms`, mutating an internal Set in place
- *  — zero allocation in the steady-state common case where ms only
- *  monotonically grows by ~16 ms per tick. `seek(ms)` resets cursors
- *  for backward jumps (drag, loop wrap).
- *
- *  Assumes `items` is sorted by `startMs`. Linear `activeIdsAt`
- *  shipped originally was fine for short pieces but Ravel's 4k+ notes
- *  × 60 fps × allocate-a-fresh-Set was the per-frame GC trigger that
- *  caused intermittent stutter even after the glow filter cut. */
-class ActiveCursor {
-  /** Currently-active id set (live, mutated in place). */
-  readonly active = new Set<string>();
-  /** Ids that became active in the latest `advance`/`seek` call. */
-  readonly added = new Set<string>();
-  /** Ids that became inactive in the latest `advance`/`seek` call. */
-  readonly removed = new Set<string>();
-
-  private startIdx = 0;
-  /** id → endMs, built once. Avoids walking back over `items` per frame
-   *  to look up an expiring item's end time. */
-  private endMs = new Map<string, number>();
-  private items: ReadonlyArray<{ id: string; startMs: number; endMs: number }>;
-  private lastMs = -Infinity;
-
-  constructor(items: ReadonlyArray<{ id: string; startMs: number; endMs: number }>) {
-    this.items = [...items].sort((a, b) => a.startMs - b.startMs);
-    for (const it of this.items) this.endMs.set(it.id, it.endMs);
-  }
-
-  /** Forward step. If `ms` went backward, falls through to `seek`. */
-  advance(ms: number) {
-    if (ms < this.lastMs) { this.seek(ms); return; }
-    this.added.clear();
-    this.removed.clear();
-    while (this.startIdx < this.items.length && this.items[this.startIdx].startMs <= ms) {
-      const it = this.items[this.startIdx];
-      if (ms < it.endMs) {
-        this.active.add(it.id);
-        this.added.add(it.id);
-      }
-      this.startIdx++;
-    }
-    for (const id of this.active) {
-      const end = this.endMs.get(id);
-      if (end === undefined || ms >= end) {
-        this.active.delete(id);
-        // Don't add to `removed` if it was also in `added` this tick
-        // (degenerate zero-duration item).
-        if (!this.added.has(id)) this.removed.add(id);
-      }
-    }
-    this.lastMs = ms;
-  }
-
-  /** Backward / non-monotonic jump. Rebuilds active set; tracks deltas
-   *  so the same applyClassDiff path works for drag and loop-wrap. */
-  seek(ms: number) {
-    this.added.clear();
-    this.removed.clear();
-    const next = new Set<string>();
-    let nextStartIdx = 0;
-    for (let i = 0; i < this.items.length; i++) {
-      const it = this.items[i];
-      if (it.startMs > ms) break;
-      nextStartIdx = i + 1;
-      if (ms < it.endMs) next.add(it.id);
-    }
-    for (const id of this.active) {
-      if (!next.has(id)) this.removed.add(id);
-    }
-    for (const id of next) {
-      if (!this.active.has(id)) this.added.add(id);
-    }
-    this.active.clear();
-    for (const id of next) this.active.add(id);
-    this.startIdx = nextStartIdx;
-    this.lastMs = ms;
-  }
-
-  /** Drop everything as removed. Used when transitioning into pause
-   *  to clear the visible glow without leaving stale highlights. */
-  clear() {
-    this.added.clear();
-    this.removed.clear();
-    for (const id of this.active) this.removed.add(id);
-    this.active.clear();
-    this.lastMs = -Infinity;
-    this.startIdx = 0;
-  }
-}
-
-/** Apply class adds/removes via the precomputed `id -> Element[]` map.
- *  Loop mode's N duplicated SVG copies each carry the same xml:id so
- *  one id can map to multiple elements.
- *
- *  Caller passes the deltas computed by `ActiveCursor` so this fn
- *  doesn't need to diff Sets — that work was the hot per-frame allocation. */
-function applyClassDelta(
-  idMap: ReadonlyMap<string, ReadonlyArray<Element>>,
-  added: ReadonlySet<string>,
-  removed: ReadonlySet<string>,
-  className: string,
-) {
-  for (const id of removed) {
-    const els = idMap.get(id);
-    if (!els) continue;
-    for (const el of els) el.classList.remove(className);
-  }
-  for (const id of added) {
-    const els = idMap.get(id);
-    if (!els) continue;
-    for (const el of els) el.classList.add(className);
-  }
-}
-
-/** Walk the pan once and build an `id -> Element[]` map keyed by every
- *  xml:id Verovio emits. Used by the per-frame active-glyph diff. We
- *  capture multiple Elements per id because loop mode duplicates the
- *  pan SVG and the cloned copies share their source's ids. */
-function buildIdMap(root: Element): Map<string, Element[]> {
-  const map = new Map<string, Element[]>();
-  for (const el of Array.from(root.querySelectorAll('[id]'))) {
-    const id = el.id;
-    if (!id) continue;
-    const arr = map.get(id);
-    if (arr) arr.push(el);
-    else map.set(id, [el]);
-  }
-  return map;
-}
-
 /** Set up the rAF render loop that translates the pan. For loop scores,
  *  tracks a `wrapOffset` so the translate stays in (-musicWidth, 0] via
- *  invisible ±musicWidth teleports. Also toggles `.is-active` on notes
- *  and harms that are currently sounding so CSS can glow them. Returns
- *  a cancel fn. */
+ *  invisible ±musicWidth teleports. Returns a cancel fn. */
 export function setupRenderLoop(args: {
   host: HTMLElement;
   pan: HTMLElement;
@@ -1863,14 +1818,11 @@ export function setupRenderLoop(args: {
    *  viewport width changes. */
   playheadPx: number;
   xAtMs: (ms: number) => number;
-  notes: ReadonlyArray<Note>;
-  harms: ReadonlyArray<Harm>;
-  /** Header (clef + keysig) events within one iteration, sorted by
-   *  startMs with a guaranteed entry at startMs=0. */
-  headerEvents: ReadonlyArray<HeaderEvent>;
-  /** Frozen overlay to crossfade as header events cross the playhead;
-   *  null for scores that never visit more than one header state. */
-  overlay: FrozenOverlay | null;
+  /** Chrome overlay (clef + keysig + meter tracks). Each frame we call
+   *  `setMs(ms)` and per-axis per-staff tracks each binary-search their
+   *  own layers — independent crossfades, no global fingerprint. Null
+   *  when the score has no chrome to display (degenerate edge case). */
+  chromeOverlay: ChromeOverlay | null;
   /** Tempo events within one iteration, sorted by startMs with a
    *  guaranteed entry at 0. Drives the tempo overlay text swap. */
   tempoEvents: ReadonlyArray<TempoEvent>;
@@ -1878,23 +1830,12 @@ export function setupRenderLoop(args: {
    *  needed when the marking never changes). */
   tempoOverlay: TempoOverlay | null;
 }): () => void {
-  const { host, pan, player, loop, musicWidth, playheadPx, xAtMs, notes, harms,
-          headerEvents, overlay, tempoEvents, tempoOverlay } = args;
-  // Built once. Avoids the per-frame `pan.querySelectorAll('[id="…"]')`
-  // walk that dominated playback cost on multi-thousand-element scores.
-  // Loop mode's duplicated SVG copies share their source's xml:id so a
-  // single id can map to multiple Elements.
-  const idMap = buildIdMap(pan);
-  // Stateful cursors over notes/harms: each tick they advance by the
-  // ms delta and produce only the added/removed deltas. Eliminates
-  // per-frame Set allocation + linear scan over thousands of notes.
-  const noteCursor = new ActiveCursor(notes);
-  const harmCursor = new ActiveCursor(harms);
+  const { host, pan, player, loop, musicWidth, playheadPx, xAtMs,
+          chromeOverlay, tempoEvents, tempoOverlay } = args;
   let rafId = 0;
   let lastRenderMs = -1;
   let wrapOffset = 0;
   let lastIterSeen = 0;
-  let wasPlayingLastFrame = false;
 
   function frame() {
     const ms = player.currentMs();
@@ -1932,32 +1873,12 @@ export function setupRenderLoop(args: {
       pan.style.transform = `translate3d(${translateX}px, 0, 0)`;
       host.classList.toggle('is-playing', player.isPlaying());
 
-      // Glow only runs while playing. During drag/pause we don't want
-      // random notes highlighted as the user scrubs through the timeline,
-      // AND the per-frame class toggle work was the main drag cost — cheap
-      // to skip when the audio isn't actually sounding anything.
-      const playing = player.isPlaying();
-      if (playing) {
-        noteCursor.advance(ms);
-        harmCursor.advance(ms);
-        applyClassDelta(idMap, noteCursor.added, noteCursor.removed, 'is-active');
-        applyClassDelta(idMap, harmCursor.added, harmCursor.removed, 'is-active');
-      } else if (wasPlayingLastFrame) {
-        // Just transitioned into pause: one-shot clear of lingering glow.
-        noteCursor.clear();
-        harmCursor.clear();
-        applyClassDelta(idMap, noteCursor.added, noteCursor.removed, 'is-active');
-        applyClassDelta(idMap, harmCursor.added, harmCursor.removed, 'is-active');
-      }
-      wasPlayingLastFrame = playing;
-
-      // Overlay crossfade on any header change (clef, keysig, or both).
-      // Pre-roll (ms < 0) resolves to the initial event. For loop mode
-      // `ms` is already modulo'd to one iteration, so wrapping naturally
-      // flips the overlay back to the initial fingerprint.
-      if (overlay && headerEvents.length > 1) {
-        overlay.setCurrent(headerFingerprint(eventAtMs(headerEvents, ms)));
-      }
+      // Per-track chrome update. Each (staff, axis) track binary-searches
+      // its own layers and toggles `.is-current`; no global fingerprint
+      // state means a clef change on staff 1 doesn't ripple to staves 0
+      // and 2. For loop mode `ms` is already modulo'd to one iteration,
+      // so wrapping naturally returns each track to its initial layer.
+      if (chromeOverlay) chromeOverlay.setMs(ms);
       if (tempoOverlay && tempoEvents.length > 1) {
         tempoOverlay.setCurrent(eventAtMs(tempoEvents, ms));
       }

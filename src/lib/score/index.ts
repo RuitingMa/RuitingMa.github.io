@@ -8,7 +8,7 @@
  *
  * Module map:
  *   constants.ts  — K, MEASURE_MUSIC_CLASSES
- *   types.ts      — Note, Harm, Anchor, HeaderEvent, Rendered, FrozenOverlay
+ *   types.ts      — Note, Harm, Anchor, Rendered, MountedScore
  *   verovio.ts    — lazy WASM loader
  *   synth.ts      — Web Audio voice bank (no DOM)
  *   render.ts     — MEI → SVG, geometry helpers, rAF render loop
@@ -21,8 +21,7 @@ import {
   appendLoopLeader,
   applyLoopSpacing,
   buildAnchors,
-  buildPannedShells,
-  createFrozenOverlay,
+  buildChromeOverlay,
   createStaffLinesLayer,
   createTempoOverlay,
   injectCopies,
@@ -39,7 +38,7 @@ import {
   stripStaffLinesFrom,
   type ScoreSource,
 } from './render';
-import { headerFingerprint, type MountedScore, type Rendered } from './types';
+import type { MountedScore, Rendered } from './types';
 
 /**
  * Look for `score.mxl`, then `.musicxml`, then `.mei` under the slug's
@@ -167,29 +166,13 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
   // need .meterSig in the selector — without it the event would fall
   // through and keep its raw measure-onset time, drifting the overlay
   // off from the visible change.
-  // Walk the entire pan so tiles' measures are picked up in order.
+  // Re-time tempo events to the moment their visible glyph (Verovio's
+  // <g class="tempo">) crosses the playhead. Mid-piece <scoreDef
+  // midi.bpm="..."> tempo events have no glyph and keep their raw
+  // measure-onset time. Header (clef/keysig/meter) overlay timing is
+  // derived directly from SVG element positions inside buildChromeOverlay,
+  // so no equivalent re-timing pass is needed for those.
   const svgMeasures = Array.from(pan.querySelectorAll('.measure'));
-  for (const evt of rendered.headerEvents) {
-    if (evt.measureIdx === 0) continue;
-    const m = svgMeasures[evt.measureIdx];
-    if (!m) continue;
-    let leftMost: DOMRect | null = null;
-    for (const g of Array.from(m.querySelectorAll('.clef, .keySig, .meterSig'))) {
-      const r = (g as Element).getBoundingClientRect();
-      if (r.width === 0 && r.height === 0) continue;
-      if (!leftMost || r.left < leftMost.left) leftMost = r;
-    }
-    if (!leftMost) continue;
-    const centerX = leftMost.left + leftMost.width / 2 - panRect0.left;
-    evt.startMs = msAtX(anchors, centerX);
-  }
-
-  // Same dance for tempo events: when MEI has a <tempo> element inside
-  // a measure, Verovio renders it as <g class="tempo"> above the staff.
-  // Re-time the event to when that glyph crosses the playhead so the
-  // overlay text swap aligns with the visible marking. Tempo events
-  // sourced from a between-measure <scoreDef midi.bpm="..."> have no
-  // glyph and keep their raw measure-onset time.
   for (const evt of rendered.tempoEvents) {
     if (evt.measureIdx === 0) continue;
     const m = svgMeasures[evt.measureIdx];
@@ -204,18 +187,17 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
 
   const staffYs = measureStaffYs(firstMeasureStaves, stageRect0.top);
 
-  // --- Build overlay shells + playhead + mask ---------------------------
-  // Each shell is composed from pan glyphs and reflowed to a uniform
-  // chrome layout: clef at m1.clef position; keysig at clef.right + pad
-  // (only when keysig != 0); meter at keysig.right + pad. Cancel
-  // naturals from mid-piece keysig changes are stripped — frozen
-  // overlay is the STABLE keysig display only. `maxChromeRight` is the
-  // right edge of the WIDEST fp's chrome, used to size the overlay box
-  // so the playhead never lands inside any fp's chrome.
-  const { shells: shellMap, maxChromeRight } = buildPannedShells(
-    pan, tile0, rendered.headerEvents, panRect0,
+  // --- Build chrome overlay + playhead + mask ---------------------------
+  // Single shell SVG with per-(staff, axis) layer stacks. Each track
+  // crossfades independently as ms crosses its layer activeFroms.
+  // No fingerprints, no per-fp shell deduplication — the source of
+  // truth is the rendered SVG glyph at each measure.
+  const xAtMsForOverlay = (px: number) => msAtX(anchors, px);
+  const chromeOverlay = buildChromeOverlay(pan, tile0, panRect0, xAtMsForOverlay);
+  const headerWidestWidth = Math.max(
+    actualHeaderWidth,
+    chromeOverlay?.maxChromeRight ?? 0,
   );
-  const headerWidestWidth = Math.max(actualHeaderWidth, maxChromeRight);
 
   // Playhead sits a small constant offset to the right of the actual
   // widest header. HEADER_MAX_PX acts as a stable axis floor so scores
@@ -232,17 +214,10 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
   );
   playheadEl.style.left = `${playheadPx}px`;
 
-  const initialFingerprint = rendered.headerEvents[0]
-    ? headerFingerprint(rendered.headerEvents[0])
-    : headerFingerprint({
-        clefs: rendered.staffGroup.staves.map(() => ({ shape: 'G', line: '2' })),
-        keysig: '0',
-        meter: { count: rendered.meterCount, unit: rendered.meterUnit, sym: '' },
-      });
-  const frozenOverlay = createFrozenOverlay(
-    shellMap, initialFingerprint, headerWidestWidth,
-  );
-  if (frozenOverlay) stage.appendChild(frozenOverlay.host);
+  if (chromeOverlay) {
+    chromeOverlay.host.style.width = `${headerWidestWidth}px`;
+    stage.appendChild(chromeOverlay.host);
+  }
 
   // Tempo overlay: only build when the piece actually has a tempo
   // marking that's worth showing. A score whose only tempo is the
@@ -255,6 +230,10 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
     : null;
   if (tempoOverlay) stage.appendChild(tempoOverlay.host);
 
+  // Staff lines layer: a stage-wide SVG with one horizontal line per
+  // staff line at fixed y. Lives at z-index 0 so the pan music renders
+  // above it. Color is `--fg-dim` (set in CSS), receding behind the
+  // solid-white musical content.
   const staffLayer = createStaffLinesLayer(staffYs, stageRect0);
   if (staffLayer) stage.insertBefore(staffLayer, stage.firstChild);
 
@@ -262,7 +241,7 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
   // it's not drawn twice. Mid-piece changes in later measures stay put
   // and scroll past the playhead naturally.
   for (const s of panSvgs) stripStaffLinesFrom(s);
-  if (frozenOverlay) stripStaffLinesFrom(frozenOverlay.host);
+  if (chromeOverlay) stripStaffLinesFrom(chromeOverlay.host);
   // Header chrome (m1 clef/keysig/meter, system bar, brace) lives only
   // on tile 0 for sliced layouts. Stripping later tiles would clobber
   // valid mid-piece keysig change glyphs since their first `.measure`
@@ -288,8 +267,7 @@ export async function mountScore(host: HTMLElement): Promise<MountedScore | null
 
   const cancelLoop = setupRenderLoop({
     host, pan, player, loop, musicWidth, playheadPx, xAtMs,
-    notes: rendered.notes, harms: rendered.harms,
-    headerEvents: rendered.headerEvents, overlay: frozenOverlay,
+    chromeOverlay,
     tempoEvents: rendered.tempoEvents, tempoOverlay,
   });
 
