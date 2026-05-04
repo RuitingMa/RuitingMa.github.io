@@ -1,0 +1,49 @@
+{
+  "tensors": {
+    "fc1.weight": {
+      "shape": [
+        16,
+        784
+      ],
+      "offset": 0,
+      "length": 12544
+    },
+    "fc1.bias": {
+      "shape": [
+        16
+      ],
+      "offset": 50176,
+      "length": 16
+    },
+    "fc2.weight": {
+      "shape": [
+        16,
+        16
+      ],
+      "offset": 50240,
+      "length": 256
+    },
+    "fc2.bias": {
+      "shape": [
+        16
+      ],
+      "offset": 51264,
+      "length": 16
+    },
+    "out.weight": {
+      "shape": [
+        10,
+        16
+      ],
+      "offset": 51328,
+      "length": 160
+    },
+    "out.bias": {
+      "shape": [
+        10
+      ],
+      "offset": 51968,
+      "length": 10
+    }
+  }
+}

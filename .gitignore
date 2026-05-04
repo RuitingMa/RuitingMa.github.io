@@ -31,6 +31,8 @@ __pycache__/
 
 # local-only artifacts — exist on disk but not part of the deployed site
 # archive/ holds pre-2023 Hexo drafts (kept for reference, not republished)
+# data/ holds large training datasets (e.g. MNIST for the 识 sketch)
 # maintenance.html is the reusable "site under maintenance" cover page
 archive/
+data/
 maintenance.html
