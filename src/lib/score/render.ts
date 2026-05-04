@@ -1275,8 +1275,20 @@ const SMALL_TO_FULL_CLEF_GLYPH: Record<string, string> = {
  *  full-size equivalents. Acts on every `<use>` descendant whose href
  *  matches a known small variant; the SMuFL reference points are
  *  preserved across the pair (gClef and gClefChange both anchor on the
- *  G2 line) so swapping the codepoint keeps staff-line alignment. */
-function upgradeChromeClefGlyphs(clefEl: Element): void {
+ *  G2 line) so swapping the codepoint keeps staff-line alignment.
+ *
+ *  Critical: only swap when the target full glyph is actually present
+ *  in the source SVG's `<defs>`. Verovio embeds only the glyphs the
+ *  rendered piece uses — a score whose mid-piece F clef changes only
+ *  ever appear as small E07C will NOT have E062 in defs. Swapping
+ *  blindly there points the `<use>` at a missing symbol id, which the
+ *  browser silently renders as 0×0 — the chrome F clef vanishes. When
+ *  the target isn't available, leave the small variant in place
+ *  (visually a touch smaller than ideal, but visible). */
+function upgradeChromeClefGlyphs(
+  clefEl: Element,
+  availableCodepoints: Set<string>,
+): void {
   for (const u of Array.from(clefEl.querySelectorAll('use'))) {
     for (const attr of ['xlink:href', 'href']) {
       const href = u.getAttribute(attr);
@@ -1287,9 +1299,24 @@ function upgradeChromeClefGlyphs(clefEl: Element): void {
       if (!m) continue;
       const replacement = SMALL_TO_FULL_CLEF_GLYPH[m[2].toUpperCase()];
       if (!replacement) continue;
+      if (!availableCodepoints.has(replacement)) continue;
       u.setAttribute(attr, `${m[1]}${replacement}${m[3]}`);
     }
   }
+}
+
+/** Scan the source SVG's `<defs>` once and collect every SMuFL codepoint
+ *  it has a symbol for. Used by upgradeChromeClefGlyphs to gate codepoint
+ *  swaps so they never point at a missing symbol. */
+function collectAvailableCodepoints(srcSvg: SVGSVGElement): Set<string> {
+  const out = new Set<string>();
+  const defs = srcSvg.querySelector('defs');
+  if (!defs) return out;
+  for (const c of Array.from(defs.children)) {
+    const m = c.id.match(/^(E[0-9A-F]{3})/i);
+    if (m) out.add(m[1].toUpperCase());
+  }
+  return out;
 }
 
 /** Read a chrome element's "visual signature" — the joined list of
@@ -1345,6 +1372,13 @@ export function buildChromeOverlay(
 
   const shell = cloneMeasureShell(tile0, 0);
   if (!shell) return null;
+
+  // SMuFL codepoints actually present in the rendered SVG's <defs>.
+  // Gates the small→full clef glyph upgrade so it never rewrites a
+  // <use> to point at a missing symbol (which would silently render
+  // as 0×0 — see upgradeChromeClefGlyphs's docstring for the failure
+  // mode this prevents).
+  const availableCodepoints = collectAvailableCodepoints(tile0);
 
   const m1Staves = Array.from(m1.querySelectorAll('.staff'));
   const shellStaves = Array.from(shell.querySelectorAll('.staff'));
@@ -1448,8 +1482,9 @@ export function buildChromeOverlay(
           const cloned = clefEl.cloneNode(true) as SVGGElement;
           // Replace small "clef change" glyphs with their full-size
           // equivalents so the chrome overlay renders every clef at the
-          // same visual weight as the m1 starting clef.
-          upgradeChromeClefGlyphs(cloned);
+          // same visual weight as the m1 starting clef. Gated on the
+          // full glyph's symbol actually being in defs.
+          upgradeChromeClefGlyphs(cloned, availableCodepoints);
           const clonedUse = cloned.querySelector('use');
           const clonedTranslate = parseTranslate(
             clonedUse?.getAttribute('transform') ?? null,
