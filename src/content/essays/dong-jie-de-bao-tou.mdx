@@ -1,0 +1,84 @@
+---
+title: 冻结的报头
+date: "2026-05-04"
+kind: ESSAY
+summary: 谱面在动，谱号、调号、拍号永远在最左边——这块小区域比看上去复杂。
+tint: rust
+draft: true
+---
+
+import Score from '../../components/Score.astro';
+
+{/*
+  起草大纲（按 cue 顺序）：
+
+  problem        — 横向滚动的谱面，最左边那块"报头"是阅读的语境锚。
+                   离开它你不知道现在是什么调、什么拍。
+                   但谱面在动，报头如果跟着动就废了；如果不动就要
+                   单独造一个不动的副本。
+  per-axis       — 这个副本不能是一整块。clef / keysig / meter 三
+                   个轴各有自己的变化节奏。chrome overlay 设计成
+                   三个独立的 track，每个 track 一个 stack of layers，
+                   按播放头位置二分查找。
+  per-staff      — 还要按 staff 分。钢琴大谱表上层换谱号，下层不
+                   该跟着闪。每个 (staff × axis) 是一个独立 track。
+  signature      — 怎么 dedup？不靠 MEI 元数据——靠"渲染出来的
+                   `<use xlink:href>` 列表"。两个 layer 视觉一致就
+                   合并。 cancel-natural (E261) 在 signature 里被
+                   剥掉。
+  small-vs-full  — 今天补的一刀：mid-piece courtesy 谱号 (E07A)
+                   被克隆到报头时还是小变体——明显小一圈。映射到
+                   full (E050) 后视觉一致。
+  keysig-width   — 5 个升 → 6 个降的转调，调号宽度从窄变宽。meter
+                   的位置必须跟着滑，但要"提前"留空间，不然窄调号
+                   时 meter 会朝左靠，宽调号时被推开。预扫一遍找
+                   maxKeysigWidth。
+  recap          — 报头是一个"假装不动"的小宇宙。每一处看起来稳
+                   的东西，背后都在做交叉淡入。
+*/}
+
+<section data-cue="problem">
+
+{/* TODO: 报头作为阅读语境锚。 */}
+
+<Score slug="jeux-deau" />
+
+</section>
+
+<section data-cue="per-axis">
+
+{/* TODO: 三个轴独立。 */}
+
+</section>
+
+<section data-cue="per-staff">
+
+{/* TODO: 多谱表的独立 track。 */}
+
+</section>
+
+<section data-cue="signature">
+
+{/* TODO: visual signature dedup，不依赖 MEI。 */}
+
+</section>
+
+<section data-cue="small-vs-full">
+
+{/* TODO: SMuFL E07A → E050 的映射。 */}
+
+</section>
+
+<section data-cue="keysig-width">
+
+{/* TODO: maxKeysigWidth 预扫 + meter slot 滑动。 */}
+
+<Score slug="all-keys" />
+
+</section>
+
+<section data-cue="recap">
+
+{/* TODO: 收。报头是一个假装不动的小宇宙。 */}
+
+</section>

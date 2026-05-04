@@ -1,0 +1,75 @@
+---
+title: 陪谱
+date: "2026-05-04"
+kind: NOTE
+summary: 一种横向滚动的乐谱。它不替你看，它陪你看。
+tint: plum
+draft: true
+---
+
+import Score from '../../components/Score.astro';
+
+{/*
+  起草大纲（按 cue 顺序）：
+
+  empty       — 谱子的常规呈现是一整页静止的方块。问题：你的眼睛得
+                自己跟节拍跑。读者和音乐永远差着一个滞后。
+  playhead    — 引入"播放头"作为一个确定的位置。它代替你定位"当下
+                听到的是这一颗"。它不是滚动，是被滚动。
+  scrolling   — 谱面横向移动，播放头不动。这点很重要：眼睛盯一个
+                固定位置就够了，剩下的交给页面。
+  frozen      — 谱号、调号、拍号永远在最左边，跟你说"现在的语境是
+                什么"。中间换调号，左边平滑替换；不消失也不闪烁。
+  loop        — 最短的一段也可以反复听。loop 不是退化，是供你停留。
+  audio       — 同时还有声音。不为了演奏，为了让你"知道这里听起来
+                是什么样的"——尤其当 32 分音符密到你眼睛跟不上的
+                时候。
+  reading     — 收：这是阅读的姿势，不是演奏的。你不是来识谱的，
+                你是来跟它过一遍的。
+*/}
+
+<section data-cue="empty">
+
+{/* TODO: 静止的谱面 vs 听音乐的时间性。 */}
+
+</section>
+
+<section data-cue="playhead">
+
+{/* TODO: 播放头作为「当下的指认」。 */}
+
+</section>
+
+<section data-cue="scrolling">
+
+{/* TODO: 谱面动 / 头不动 的视觉决策。 */}
+
+<Score slug="jeux-deau" />
+
+</section>
+
+<section data-cue="frozen">
+
+{/* TODO: 报头永远在那里。语境感。 */}
+
+</section>
+
+<section data-cue="loop">
+
+{/* TODO: 短句的反复。陪伴的耐心。 */}
+
+<Score slug="jeux-deau" loop />
+
+</section>
+
+<section data-cue="audio">
+
+{/* TODO: 声音作为"知道这里听起来怎样"。 */}
+
+</section>
+
+<section data-cue="reading">
+
+{/* TODO: 收。这是阅读，不是识谱。 */}
+
+</section>

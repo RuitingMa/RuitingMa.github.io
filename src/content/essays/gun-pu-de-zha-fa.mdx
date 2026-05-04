@@ -1,0 +1,82 @@
+---
+title: 滚谱的扎法
+date: "2026-05-04"
+kind: ESSAY
+summary: 从 MEI 到一个能在网页里横向滚动、声音同步的乐谱组件。
+tint: dune
+draft: true
+---
+
+import Score from '../../components/Score.astro';
+
+{/*
+  起草大纲（按 cue 顺序）：
+
+  why-mei         — MEI / MusicXML 是什么。为什么不画 PNG。
+                    Verovio 把 MEI 渲到 SVG 是个起点，但只是起点。
+  one-system      — `breaks: 'none'` 把一首曲子排成一整条横向系统。
+                    天然给"横向滚动"提供了画布。
+                    `pageWidth: 100000, adjustPageHeight: true`。
+  staff-anchor    — viewBox 的坑：bbox 含装饰，装饰多 → staff 被压扁。
+                    解：以 staff body 为锚反推舞台高度（measure 一次，
+                    重设 --score-h，回流，继续）。
+                    本博客的 staffHeight = 40 默认。
+  tile            — Ravel 全曲 SVG 宽 ~37k px，撞 GPU 单纹理上限。
+                    沿小节切 tile（≤4096px），每片自己一个 viewBox
+                    crop，外层 GPU 各管各的。
+  anchors         — 把每个音符的 onset ms 映射到屏幕 x。线性插值 +
+                    游标缓存（O(1) 稳态）。msAtX/xAtMs 双向。
+  loop            — 多份 SVG 副本贴边铺开 + 幻影前导 tile。看到的
+                    seam 都是设计过的。
+  recap           — 整套架构是写给一个人的：作者读自己的谱子的时候
+                    不应该被装饰量影响视觉权重，不应该被 GPU 限制
+                    打到 10fps，不应该听一段需要按 5 个键。
+*/}
+
+<section data-cue="why-mei">
+
+{/* TODO: MEI/MusicXML 简介，Verovio 是什么。 */}
+
+</section>
+
+<section data-cue="one-system">
+
+{/* TODO: `breaks: 'none'` 的决定 */}
+
+<Score slug="jeux-deau" />
+
+</section>
+
+<section data-cue="staff-anchor">
+
+{/* TODO: viewBox 含装饰的问题 + staff-anchor 的解。 */}
+
+</section>
+
+<section data-cue="tile">
+
+{/* TODO: GPU 纹理上限 + tile 切片。 */}
+
+<Score slug="jeux-deau-ravel" />
+
+</section>
+
+<section data-cue="anchors">
+
+{/* TODO: msAtX/xAtMs，游标缓存。 */}
+
+</section>
+
+<section data-cue="loop">
+
+{/* TODO: 多副本 + 幻影 leader 的实现。 */}
+
+<Score slug="jeux-deau" loop />
+
+</section>
+
+<section data-cue="recap">
+
+{/* TODO: 收。整套是为读自己的谱子写的。 */}
+
+</section>
