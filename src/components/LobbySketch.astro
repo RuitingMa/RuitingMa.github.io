@@ -10,13 +10,10 @@
 <canvas id="lobby"></canvas>
 
 <script>
-  // See ParticleSketch for the lifecycle rationale. Same pattern: module
-  // bundled once, `init()` re-entered on every page that hosts the canvas,
-  // cleanup via `astro:before-swap`.
-  let currentCleanup: (() => void) | null = null;
+  // Lifecycle: see src/lib/sketch-lifecycle.ts.
+  import { mountSketch } from '../lib/sketch-lifecycle';
 
-  function init() {
-    if (currentCleanup) return;
+  mountSketch(() => {
     const canvas = document.getElementById('lobby') as HTMLCanvasElement | null;
     if (!canvas) return;
 
@@ -121,15 +118,12 @@
         }
       }
       ctx.globalAlpha = 1;
-      currentCleanup = () => {
+      return () => {
         aborted = true;
         window.removeEventListener('stage:heat', onHeat);
         window.removeEventListener('stage:pause', onPause);
         window.removeEventListener('resize', resize);
-        currentCleanup = null;
       };
-      document.addEventListener('astro:before-swap', () => currentCleanup?.(), { once: true });
-      return;
     }
 
     function frame() {
@@ -189,19 +183,14 @@
     }
     frame();
 
-    currentCleanup = () => {
+    return () => {
       aborted = true;
       cancelAnimationFrame(rafId);
       window.removeEventListener('stage:heat', onHeat);
       window.removeEventListener('stage:pause', onPause);
       window.removeEventListener('resize', resize);
-      currentCleanup = null;
     };
-    document.addEventListener('astro:before-swap', () => currentCleanup?.(), { once: true });
-  }
-
-  init();
-  document.addEventListener('astro:page-load', init);
+  });
 </script>
 
 <style>

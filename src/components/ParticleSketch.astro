@@ -4,18 +4,9 @@
 <canvas id="flow-field"></canvas>
 
 <script>
-  // Initialization lifecycle:
-  //   - This module is bundled once by Vite (TS is transpiled).
-  //   - `init()` is idempotent; re-runs on every page that contains our
-  //     canvas. It attaches listeners, starts the rAF loop, and registers
-  //     an `astro:before-swap` cleanup that tears everything down before
-  //     the next navigation.
-  //   - `currentCleanup` lives at module scope so repeat visits (sketch →
-  //     home → sketch) work correctly without leaking listeners or rAFs.
-  let currentCleanup: (() => void) | null = null;
+  import { mountSketch } from '../lib/sketch-lifecycle';
 
-  function init() {
-    if (currentCleanup) return;  // already running on this page
+  mountSketch(() => {
     const canvas = document.getElementById('flow-field') as HTMLCanvasElement | null;
     if (!canvas) return;         // not on a page that hosts this sketch
 
@@ -203,21 +194,13 @@
       frame();
     }
 
-    currentCleanup = () => {
+    return () => {
       aborted = true;
       cancelAnimationFrame(rafId);
       window.removeEventListener('stage:pause', onPause);
       window.removeEventListener('resize', resize);
-      currentCleanup = null;
     };
-    document.addEventListener('astro:before-swap', () => currentCleanup?.(), { once: true });
-  }
-
-  // Run on the initial load of this module (covers the no-ClientRouter case
-  // and the first navigation to a page that bundles this component).
-  init();
-  // And on every subsequent ClientRouter navigation.
-  document.addEventListener('astro:page-load', init);
+  });
 </script>
 
 <style>

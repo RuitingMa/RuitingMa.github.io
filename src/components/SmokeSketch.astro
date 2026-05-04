@@ -19,12 +19,10 @@
   //   arbitrary u; we get that property for free, so the Poisson solve
   //   drops out entirely.
   //
-  // Lifecycle mirrors ParticleSketch / CurlNoiseSketch — module-scope
-  // currentCleanup, idempotent init(), astro:before-swap teardown.
-  let currentCleanup: (() => void) | null = null;
+  // Lifecycle: see src/lib/sketch-lifecycle.ts.
+  import { mountSketch } from '../lib/sketch-lifecycle';
 
-  function init() {
-    if (currentCleanup) return;
+  mountSketch(() => {
     const canvas = document.getElementById('smoke') as HTMLCanvasElement | null;
     if (!canvas) return;
 
@@ -332,18 +330,13 @@
       frame();
     }
 
-    currentCleanup = () => {
+    return () => {
       aborted = true;
       cancelAnimationFrame(rafId);
       window.removeEventListener('stage:pause', onPause);
       window.removeEventListener('resize', resize);
-      currentCleanup = null;
     };
-    document.addEventListener('astro:before-swap', () => currentCleanup?.(), { once: true });
-  }
-
-  init();
-  document.addEventListener('astro:page-load', init);
+  });
 </script>
 
 <style>

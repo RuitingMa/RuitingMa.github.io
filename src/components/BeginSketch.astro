@@ -32,14 +32,13 @@
 <canvas id="begin"></canvas>
 
 <script>
-  // See ParticleSketch for the init/cleanup lifecycle rationale. Same pattern.
-  let currentCleanup: (() => void) | null = null;
+  // Lifecycle: see src/lib/sketch-lifecycle.ts.
+  import { mountSketch } from '../lib/sketch-lifecycle';
 
   type Tiling = 'sq' | 'hex';
   type Sweep = 'rows' | 'cols' | 'diag';
 
-  function init() {
-    if (currentCleanup) return;
+  mountSketch(() => {
     const canvas = document.getElementById('begin') as HTMLCanvasElement | null;
     if (!canvas) return;
 
@@ -347,32 +346,24 @@
         }
       }
       ctx.globalAlpha = 1;
-      currentCleanup = () => {
+      return () => {
         aborted = true;
         window.removeEventListener('stage:cue', onCue);
         window.removeEventListener('stage:pause', onPause);
         window.removeEventListener('resize', resize);
-        currentCleanup = null;
       };
-      document.addEventListener('astro:before-swap', () => currentCleanup?.(), { once: true });
-      return;
     }
 
     frame();
 
-    currentCleanup = () => {
+    return () => {
       aborted = true;
       cancelAnimationFrame(rafId);
       window.removeEventListener('stage:cue', onCue);
       window.removeEventListener('stage:pause', onPause);
       window.removeEventListener('resize', resize);
-      currentCleanup = null;
     };
-    document.addEventListener('astro:before-swap', () => currentCleanup?.(), { once: true });
-  }
-
-  init();
-  document.addEventListener('astro:page-load', init);
+  });
 </script>
 
 <style>

@@ -18,11 +18,10 @@
  *
  * Lantern radius drives visual body size and bell pitch (f ∝ 1/r).
  *
- * Lifecycle mirrors existing sketches:
- *   - init() idempotent; re-runs on every page load hosting this canvas.
- *   - astro:before-swap tears down GL resources before SPA nav.
+ * Lifecycle: see src/lib/sketch-lifecycle.ts.
  *   - stage:pause freezes physics, rAF, and ripple aging.
  *   - prefers-reduced-motion: one still frame + pre-placed decorative ripples.
+ *   - astro:before-swap (via mountSketch) tears down GL resources before SPA nav.
  */
 ---
 
@@ -101,10 +100,10 @@
   // of a source born against a boundary.
   const RIPPLE_WALL_FADE = 0.12;
 
-  let currentCleanup: (() => void) | null = null;
+  // Lifecycle: see src/lib/sketch-lifecycle.ts.
+  import { mountSketch } from '../lib/sketch-lifecycle';
 
-  function init() {
-    if (currentCleanup) return;
+  mountSketch(() => {
     const canvas = document.getElementById('clinamen-gl') as HTMLCanvasElement | null;
     if (!canvas) return;
 
@@ -799,7 +798,7 @@
     }
     frame();
 
-    currentCleanup = () => {
+    return () => {
       aborted = true;
       cancelAnimationFrame(rafId);
       window.removeEventListener('resize', resize);
@@ -812,13 +811,8 @@
       gl!.deleteShader(fs);
       const loseExt = gl!.getExtension('WEBGL_lose_context');
       loseExt?.loseContext();
-      currentCleanup = null;
     };
-    document.addEventListener('astro:before-swap', () => currentCleanup?.(), { once: true });
-  }
-
-  init();
-  document.addEventListener('astro:page-load', init);
+  });
 </script>
 
 <style>
