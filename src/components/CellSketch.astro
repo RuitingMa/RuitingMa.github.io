@@ -108,15 +108,24 @@
     // cells barely respond and fast cells light up sharply.
     const MOMENTUM_REF      = 3.0;   // |thetaDot| (rad/s) at saturation
     const MOMENTUM_BOOST    = 0.5;   // peak additive alpha at saturation
-    // Path-light flares: once in a while pick two random cells on the
-    // grid boundary (padding-inclusive) and trace a Bresenham-grid path
-    // between them; each cell on the path ignites at full alpha after a
-    // small delay, then fades. Multiple paths can overlap; the per-cell
-    // lit alpha takes max-blend with the veil base so the path stays
-    // crisp on top of the existing tint.
-    const PATH_SPAWN_INTERVAL_MS = 8000; // mean ms between spawns (Poisson)
-    const PATH_STEP_MS           = 110;  // delay between successive cell ignitions
-    const PATH_FADE_MS           = 1800; // each cell's fade duration
+    // Path-light flares: pick two random cells on the grid boundary
+    // (padding-inclusive) with a minimum end-to-end span, trace a
+    // Bresenham-grid line between them, and ignite cells along the way.
+    // The line itself is 2 cells wide (the Bresenham trace + a single
+    // cell offset on the perpendicular). Light then bleeds outward
+    // perpendicular to the line, peak alpha decaying with distance and
+    // each spread layer ignited a bit later than the one before — so
+    // the flare reads as a moving glow that diffuses sideways. Multiple
+    // paths can overlap; per-cell lit alpha takes max-blend, then
+    // max-blends again with the veil + momentum boost.
+    const PATH_SPAWN_INTERVAL_MS = 5000; // mean ms between spawns (Poisson)
+    const PATH_STEP_MS           = 110;  // ms between successive cell ignitions along the line
+    const PATH_FADE_MS           = 3500; // each cell's fade duration
+    const PATH_PEAK_ALPHA        = 0.70; // peak alpha at the line core (full opacity ≡ 1)
+    const PATH_MIN_LENGTH        = 7;    // Chebyshev cells; below this we skip & retry
+    const PATH_MAX_SPREAD        = 3;    // perpendicular cells the flare bleeds into
+    const PATH_SPREAD_DECAY      = 0.60; // peak alpha ratio per cell of spread distance
+    const PATH_SPREAD_STEP_MS    = 200;  // ms delay per cell of spread distance
 
     // ----- Pre-rendered orbital point sprite (true exp decay) -----
     const DOT_HALF  = 11;
@@ -317,9 +326,10 @@
     }
 
     // ----- Path-light flares -----
+    type PathCell = { litAt: number; peak: number };
     type PathAnim = {
-      cellLitAt: Map<string, number>;  // cellKey → ms when this cell ignites
-      endTime: number;                  // ms when the last cell finishes fading
+      cells: Map<string, PathCell>;
+      endTime: number;
     };
     const activePaths: PathAnim[] = [];
 
@@ -331,38 +341,82 @@
         if (side === 2) return [iMin + Math.floor(Math.random() * (iMax - iMin + 1)), jMin];
         return         [iMin + Math.floor(Math.random() * (iMax - iMin + 1)), jMax];
       };
-      let [i0, j0] = pickBoundary();
-      let [i1, j1] = pickBoundary();
-      let safety = 8;
-      while (i0 === i1 && j0 === j1 && safety-- > 0) {
+      // Reject endpoint pairs whose Chebyshev distance falls below
+      // PATH_MIN_LENGTH so flares always span a substantial portion of
+      // the grid. Bound the retry loop — for very narrow viewports the
+      // constraint may be unsatisfiable; we just skip the spawn.
+      let i0 = 0, j0 = 0, i1 = 0, j1 = 0;
+      let found = false;
+      for (let attempt = 0; attempt < 12; attempt++) {
+        [i0, j0] = pickBoundary();
         [i1, j1] = pickBoundary();
+        const cheb = Math.max(Math.abs(i1 - i0), Math.abs(j1 - j0));
+        if (cheb >= PATH_MIN_LENGTH) { found = true; break; }
       }
-      if (i0 === i1 && j0 === j1) return;
+      if (!found) return;
 
-      // Bresenham line on the integer grid: each step lands on an
-      // adjacent cell (4- or 8-neighbor), which on this scale lines up
-      // with Voronoi adjacency for the seeds. Path ignites cell-by-cell.
-      const cellLitAt = new Map<string, number>();
+      // Per-path perpendicular: 90° rotation of the overall direction
+      // sign vector. Constant across the path so the flare reads as a
+      // single straight band rather than a zigzag of per-step perps.
+      const sgnDI = Math.sign(i1 - i0);
+      const sgnDJ = Math.sign(j1 - j0);
+      const perpI = -sgnDJ;
+      const perpJ =  sgnDI;
+
+      // Bresenham trace from start to end.
+      const linePath: { i: number; j: number }[] = [];
       const di = Math.abs(i1 - i0);
       const dj = Math.abs(j1 - j0);
       const si = i0 < i1 ? 1 : -1;
       const sj = j0 < j1 ? 1 : -1;
       let err = di - dj;
       let i = i0, j = j0;
-      let step = 0;
-      // Safety bound just in case.
       const maxSteps = di + dj + 2;
-      while (step < maxSteps) {
-        cellLitAt.set(cellKey(i, j), now + step * PATH_STEP_MS);
-        step++;
+      while (linePath.length < maxSteps) {
+        linePath.push({ i, j });
         if (i === i1 && j === j1) break;
         const e2 = 2 * err;
         if (e2 > -dj) { err -= dj; i += si; }
         if (e2 <  di) { err += di; j += sj; }
       }
+
+      // Core of the band is 2 cells wide: d=0 is the Bresenham trace,
+      // d=1 is one perpendicular step. Both ignite at the same moment
+      // (no spread delay). For |d| beyond the core, distance from the
+      // core grows by 1 per step on each side; that distance feeds both
+      // the peak-alpha decay and the per-layer ignition delay so the
+      // flare diffuses outward over time.
+      const spreadDist = (d: number): number => {
+        if (d === 0 || d === 1) return 0;
+        return d > 1 ? d - 1 : -d;
+      };
+      const cells = new Map<string, PathCell>();
+      let maxSpreadDist = 0;
+      for (let s = 0; s < linePath.length; s++) {
+        const p = linePath[s];
+        for (let d = -PATH_MAX_SPREAD; d <= PATH_MAX_SPREAD + 1; d++) {
+          const ci = p.i + d * perpI;
+          const cj = p.j + d * perpJ;
+          const dist = spreadDist(d);
+          if (dist > maxSpreadDist) maxSpreadDist = dist;
+          const peak = PATH_PEAK_ALPHA * Math.pow(PATH_SPREAD_DECAY, dist);
+          const litAt = now + s * PATH_STEP_MS + dist * PATH_SPREAD_STEP_MS;
+          const key = cellKey(ci, cj);
+          const existing = cells.get(key);
+          // Earliest non-zero peak wins — a cell touched by a later
+          // step would otherwise overwrite the brighter earlier hit.
+          if (!existing || peak > existing.peak) {
+            cells.set(key, { litAt, peak });
+          }
+        }
+      }
       activePaths.push({
-        cellLitAt,
-        endTime: now + (step - 1) * PATH_STEP_MS + PATH_FADE_MS,
+        cells,
+        endTime:
+          now +
+          (linePath.length - 1) * PATH_STEP_MS +
+          maxSpreadDist * PATH_SPREAD_STEP_MS +
+          PATH_FADE_MS,
       });
     }
 
@@ -560,15 +614,17 @@
         const m = Math.min(1, Math.abs(c.thetaDot) / MOMENTUM_REF);
         const boost = MOMENTUM_BOOST * m * m;
         // Path-light: max-blend the largest active path contribution
-        // for this cell against the veil. Linear fade from 1 → 0 over
-        // PATH_FADE_MS starting at this cell's individual ignition time.
+        // for this cell. Each cell on a path carries its own peak
+        // (higher near the line core, lower in the spread halo); fade
+        // is linear from peak → 0 across PATH_FADE_MS, starting at the
+        // cell's own ignition time.
         let lit = 0;
         for (let pi = 0; pi < activePaths.length; pi++) {
-          const t = activePaths[pi].cellLitAt.get(v.key);
-          if (t === undefined) continue;
-          const age = now - t;
+          const entry = activePaths[pi].cells.get(v.key);
+          if (!entry) continue;
+          const age = now - entry.litAt;
           if (age < 0 || age > PATH_FADE_MS) continue;
-          const a = 1 - age / PATH_FADE_MS;
+          const a = entry.peak * (1 - age / PATH_FADE_MS);
           if (a > lit) lit = a;
         }
         v.fillAlpha = Math.max(Math.min(1, baseAlpha + boost), lit);
