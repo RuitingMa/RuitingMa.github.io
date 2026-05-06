@@ -102,6 +102,12 @@
     const TINT_GROUP_SCALE  = 4;     // cells per noise unit (larger → bigger groups)
     const TINT_BIAS         = 0.5;   // <1 biases toward opaque (rare transparent)
     const TINT_LIFETIME_MS  = 30000; // time to fade to full transparency
+    // Momentum-driven alpha boost: cells with high |thetaDot| (typically
+    // because the cursor's pendulum torque is acting on them) get an
+    // additional veil on top of the time-faded base. Squared so quiet
+    // cells barely respond and fast cells light up sharply.
+    const MOMENTUM_REF      = 3.0;   // |thetaDot| (rad/s) at saturation
+    const MOMENTUM_BOOST    = 0.5;   // peak additive alpha at saturation
 
     // ----- Pre-rendered orbital point sprite (true exp decay) -----
     const DOT_HALF  = 11;
@@ -356,7 +362,7 @@
       const mwx = mouseX + camX - halfW;
       const mwy = mouseY + camY - halfH;
       const mouseInside = mouseX > -9000;
-      const K_DECAY = CELL_SIZE * 0.85;
+      const K_DECAY = CELL_SIZE * 2.5;
 
       const cellCount = (iMax - iMin + 1) * (jMax - jMin + 1);
       const flatNeeded = 2 * cellCount;
@@ -481,7 +487,12 @@
         const fade = c.birthTime < 0
           ? 1
           : Math.max(0, 1 - (now - c.birthTime) / TINT_LIFETIME_MS);
-        v.fillAlpha = c.startAlpha * fade;
+        const baseAlpha = c.startAlpha * fade;
+        // Quadratic momentum boost — additive on top of base so even
+        // fully decayed cells light up under the cursor.
+        const m = Math.min(1, Math.abs(c.thetaDot) / MOMENTUM_REF);
+        const boost = MOMENTUM_BOOST * m * m;
+        v.fillAlpha = Math.min(1, baseAlpha + boost);
         v.fill = `rgba(${ACCENT[0]},${ACCENT[1]},${ACCENT[2]},${v.fillAlpha})`;
 
         bboxesBuf[k * 4]     = Math.max(0, Math.floor(bbMinX));
