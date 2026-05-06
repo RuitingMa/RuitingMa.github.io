@@ -87,10 +87,12 @@
     // Per-cell tint as a translucent moss veil over BG. Each cell gets
     // a startAlpha sampled from a smooth 2-D noise (so adjacent cells
     // share regional means — opaque clusters and rare transparent
-    // pockets, instead of uniform scatter). On birth at the boundary
-    // a cell sits at startAlpha; the alpha then linearly fades to 0
-    // across TINT_LIFETIME_MS while the cell is in view. Re-entry
-    // after pruning resets the clock.
+    // pockets, instead of uniform scatter). The cell sits at startAlpha
+    // until its seed first crosses into the on-canvas range (the inner
+    // window inside the padding zone); from that moment the alpha
+    // linearly fades to 0 across TINT_LIFETIME_MS. Cells in the padding
+    // zone display at full startAlpha so the leading edge of the screen
+    // shows fresh tint as new cells stream in.
     const MAX_TINT          = 0.4;
     const TINT_GROUP_SCALE  = 4;     // cells per noise unit (larger → bigger groups)
     const TINT_BIAS         = 0.5;   // <1 biases toward opaque (rare transparent)
@@ -260,13 +262,13 @@
       omegaAmp: number;
       omegaPhase: number;
       rFactor: number;
-      birthTime: number;   // ms — set on first ensureCell after entering view
+      birthTime: number;   // ms — -1 until cell first enters the on-canvas window; then now
       startAlpha: number;  // peak fill alpha at birth, faded over time
     };
     const cells = new Map<string, Cell>();
     const cellKey = (i: number, j: number) => `${i},${j}`;
 
-    function ensureCell(i: number, j: number, now: number): Cell {
+    function ensureCell(i: number, j: number): Cell {
       const k = cellKey(i, j);
       let c = cells.get(k);
       if (c) return c;
@@ -280,7 +282,7 @@
         omegaAmp: 0.7 + hash01(i, j, 5) * 1.0,
         omegaPhase: hash01(i, j, 6) * Math.PI * 2,
         rFactor: 0.7 + hash01(i, j, 4) * 0.15,
-        birthTime: now,
+        birthTime: -1,
         startAlpha: Math.pow(groupNoise, TINT_BIAS) * MAX_TINT,
       };
       cells.set(k, c);
@@ -359,9 +361,23 @@
       const visible: V[] = [];
       let n = 0;
 
+      // The on-canvas window is the visible range minus the 2-cell
+      // padding on each side (cells in the padding zone have their seed
+      // off-screen but contribute clipped polygon strips at the canvas
+      // edge). Birth-clock starts when a cell first enters this window.
+      const onCanvasIMin = iMin + 2, onCanvasIMax = iMax - 2;
+      const onCanvasJMin = jMin + 2, onCanvasJMax = jMax - 2;
+
       for (let j = jMin; j <= jMax; j++) {
         for (let i = iMin; i <= iMax; i++) {
-          const c = ensureCell(i, j, now);
+          const c = ensureCell(i, j);
+          if (
+            c.birthTime < 0 &&
+            i >= onCanvasIMin && i <= onCanvasIMax &&
+            j >= onCanvasJMin && j <= onCanvasJMax
+          ) {
+            c.birthTime = now;
+          }
           const cwx = (i + 0.5) * CELL_SIZE;
           const cwy = (j + 0.5) * CELL_SIZE;
           const cx  = cwx - camX + halfW;
@@ -387,7 +403,9 @@
           const py = cy + r * Math.sin(c.theta);
           flatBuf[n * 2]     = px;
           flatBuf[n * 2 + 1] = py;
-          const fade = Math.max(0, 1 - (now - c.birthTime) / TINT_LIFETIME_MS);
+          const fade = c.birthTime < 0
+            ? 1  // still in padding zone — display at full startAlpha
+            : Math.max(0, 1 - (now - c.birthTime) / TINT_LIFETIME_MS);
           const fillAlpha = c.startAlpha * fade;
           const fill = `rgba(${ACCENT[0]},${ACCENT[1]},${ACCENT[2]},${fillAlpha})`;
           visible.push({ cx, cy, r, px, py, fill, fillAlpha });
