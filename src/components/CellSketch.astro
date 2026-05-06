@@ -121,11 +121,13 @@
     const PATH_SPAWN_INTERVAL_MS = 5000; // mean ms between spawns (Poisson)
     const PATH_STEP_MS           = 110;  // ms between successive cell ignitions along the line
     const PATH_FADE_MS           = 3500; // each cell's fade duration
+    const PATH_FADE_GAMMA        = 0.5;  // <1 sustains brightness, falls fast at end (sqrt curve)
     const PATH_PEAK_ALPHA        = 0.70; // peak alpha at the line core (full opacity ≡ 1)
     const PATH_MIN_LENGTH        = 7;    // Chebyshev cells; below this we skip & retry
     const PATH_MAX_SPREAD        = 3;    // perpendicular cells the flare bleeds into
     const PATH_SPREAD_DECAY      = 0.60; // peak alpha ratio per cell of spread distance
     const PATH_SPREAD_STEP_MS    = 200;  // ms delay per cell of spread distance
+    const PATH_LIT_KICK          = 2.0;  // angular accel (rad/s²) per unit lit alpha — drives the cell's pendulum
 
     // ----- Pre-rendered orbital point sprite (true exp decay) -----
     const DOT_HALF  = 11;
@@ -489,13 +491,33 @@
       const flatNeeded = 2 * cellCount;
       if (flatBuf.length < flatNeeded) flatBuf = new Float64Array(flatNeeded * 2);
 
-      type V = { cx: number; cy: number; r: number; px: number; py: number; c: Cell; key: string; fill: string; fillAlpha: number };
+      type V = { cx: number; cy: number; r: number; px: number; py: number; c: Cell; lit: number; fill: string; fillAlpha: number };
       const visible: V[] = [];
       let n = 0;
 
       for (let j = jMin; j <= jMax; j++) {
         for (let i = iMin; i <= iMax; i++) {
           const c = ensureCell(i, j);
+
+          // Path-lit alpha for this cell at `now`. Computed here (before
+          // physics integration) so it can both drive the pendulum kick
+          // and be stored on V for the render pass — single lookup
+          // instead of two. Non-linear fade: pow(1 - age/fade, gamma)
+          // with gamma < 1 sustains brightness through most of fadeMs
+          // and snaps off at the end.
+          let curLit = 0;
+          if (activePaths.length > 0) {
+            const key = cellKey(i, j);
+            for (let pi = 0; pi < activePaths.length; pi++) {
+              const entry = activePaths[pi].cells.get(key);
+              if (!entry) continue;
+              const age = now - entry.litAt;
+              if (age < 0 || age > PATH_FADE_MS) continue;
+              const a = entry.peak * Math.pow(1 - age / PATH_FADE_MS, PATH_FADE_GAMMA);
+              if (a > curLit) curLit = a;
+            }
+          }
+
           const cwx = (i + 0.5) * CELL_SIZE;
           const cwy = (j + 0.5) * CELL_SIZE;
           const cx  = cwx - camX + halfW;
@@ -513,6 +535,14 @@
               const tc = Math.atan2(dy, dx);
               dd += -k * Math.sin(c.theta - tc);
             }
+            // Path-lit kick: angular accel proportional to current lit
+            // alpha, in the cell's natural rotation direction. As the
+            // flare advances, lit cells spin up; combined with the
+            // existing momentum→alpha boost in the bbox loop, a lit
+            // cell visibly rolls and stays bright via positive feedback.
+            if (curLit > 0) {
+              dd += Math.sign(c.omegaBase) * curLit * PATH_LIT_KICK;
+            }
             c.thetaDot += dd * stepDt;
             c.theta    += c.thetaDot * stepDt;
           }
@@ -523,7 +553,7 @@
           flatBuf[n * 2 + 1] = py;
           // fill / fillAlpha are filled in below, after Voronoi build,
           // when each cell's polygon-canvas overlap is known.
-          visible.push({ cx, cy, r, px, py, c, key: cellKey(i, j), fill: '', fillAlpha: 0 });
+          visible.push({ cx, cy, r, px, py, c, lit: curLit, fill: '', fillAlpha: 0 });
           n++;
         }
       }
@@ -613,21 +643,10 @@
         // fully decayed cells light up under the cursor.
         const m = Math.min(1, Math.abs(c.thetaDot) / MOMENTUM_REF);
         const boost = MOMENTUM_BOOST * m * m;
-        // Path-light: max-blend the largest active path contribution
-        // for this cell. Each cell on a path carries its own peak
-        // (higher near the line core, lower in the spread halo); fade
-        // is linear from peak → 0 across PATH_FADE_MS, starting at the
-        // cell's own ignition time.
-        let lit = 0;
-        for (let pi = 0; pi < activePaths.length; pi++) {
-          const entry = activePaths[pi].cells.get(v.key);
-          if (!entry) continue;
-          const age = now - entry.litAt;
-          if (age < 0 || age > PATH_FADE_MS) continue;
-          const a = entry.peak * (1 - age / PATH_FADE_MS);
-          if (a > lit) lit = a;
-        }
-        v.fillAlpha = Math.max(Math.min(1, baseAlpha + boost), lit);
+        // Path-light contribution was already computed in the visible
+        // loop (so the same value drove the pendulum kick); reuse it
+        // here as a max-blend over the veil + momentum base.
+        v.fillAlpha = Math.max(Math.min(1, baseAlpha + boost), v.lit);
         v.fill = `rgba(${ACCENT[0]},${ACCENT[1]},${ACCENT[2]},${v.fillAlpha})`;
 
         bboxesBuf[k * 4]     = Math.max(0, Math.floor(bbMinX));
