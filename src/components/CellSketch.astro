@@ -108,6 +108,15 @@
     // cells barely respond and fast cells light up sharply.
     const MOMENTUM_REF      = 3.0;   // |thetaDot| (rad/s) at saturation
     const MOMENTUM_BOOST    = 0.5;   // peak additive alpha at saturation
+    // Path-light flares: once in a while pick two random cells on the
+    // grid boundary (padding-inclusive) and trace a Bresenham-grid path
+    // between them; each cell on the path ignites at full alpha after a
+    // small delay, then fades. Multiple paths can overlap; the per-cell
+    // lit alpha takes max-blend with the veil base so the path stays
+    // crisp on top of the existing tint.
+    const PATH_SPAWN_INTERVAL_MS = 8000; // mean ms between spawns (Poisson)
+    const PATH_STEP_MS           = 110;  // delay between successive cell ignitions
+    const PATH_FADE_MS           = 1800; // each cell's fade duration
 
     // ----- Pre-rendered orbital point sprite (true exp decay) -----
     const DOT_HALF  = 11;
@@ -307,6 +316,56 @@
       }
     }
 
+    // ----- Path-light flares -----
+    type PathAnim = {
+      cellLitAt: Map<string, number>;  // cellKey → ms when this cell ignites
+      endTime: number;                  // ms when the last cell finishes fading
+    };
+    const activePaths: PathAnim[] = [];
+
+    function spawnPath(now: number, iMin: number, iMax: number, jMin: number, jMax: number) {
+      const pickBoundary = (): [number, number] => {
+        const side = Math.floor(Math.random() * 4);
+        if (side === 0) return [iMin, jMin + Math.floor(Math.random() * (jMax - jMin + 1))];
+        if (side === 1) return [iMax, jMin + Math.floor(Math.random() * (jMax - jMin + 1))];
+        if (side === 2) return [iMin + Math.floor(Math.random() * (iMax - iMin + 1)), jMin];
+        return         [iMin + Math.floor(Math.random() * (iMax - iMin + 1)), jMax];
+      };
+      let [i0, j0] = pickBoundary();
+      let [i1, j1] = pickBoundary();
+      let safety = 8;
+      while (i0 === i1 && j0 === j1 && safety-- > 0) {
+        [i1, j1] = pickBoundary();
+      }
+      if (i0 === i1 && j0 === j1) return;
+
+      // Bresenham line on the integer grid: each step lands on an
+      // adjacent cell (4- or 8-neighbor), which on this scale lines up
+      // with Voronoi adjacency for the seeds. Path ignites cell-by-cell.
+      const cellLitAt = new Map<string, number>();
+      const di = Math.abs(i1 - i0);
+      const dj = Math.abs(j1 - j0);
+      const si = i0 < i1 ? 1 : -1;
+      const sj = j0 < j1 ? 1 : -1;
+      let err = di - dj;
+      let i = i0, j = j0;
+      let step = 0;
+      // Safety bound just in case.
+      const maxSteps = di + dj + 2;
+      while (step < maxSteps) {
+        cellLitAt.set(cellKey(i, j), now + step * PATH_STEP_MS);
+        step++;
+        if (i === i1 && j === j1) break;
+        const e2 = 2 * err;
+        if (e2 > -dj) { err -= dj; i += si; }
+        if (e2 <  di) { err += di; j += sj; }
+      }
+      activePaths.push({
+        cellLitAt,
+        endTime: now + (step - 1) * PATH_STEP_MS + PATH_FADE_MS,
+      });
+    }
+
     // ----- Pointer / pause / resize -----
     let mouseX = -9999, mouseY = -9999;
     const onPointerMove = (e: PointerEvent) => {
@@ -357,6 +416,16 @@
       const jMax = Math.floor((camY + halfH) / CELL_SIZE) + 2;
       pruneCells(iMin, iMax, jMin, jMax);
 
+      // Path-light: drop expired flares, then maybe spawn a fresh one.
+      // Spawn probability is dt-scaled so the rate stays Poisson regardless
+      // of frame timing.
+      for (let pi = activePaths.length - 1; pi >= 0; pi--) {
+        if (activePaths[pi].endTime < now) activePaths.splice(pi, 1);
+      }
+      if (Math.random() < (dt * 1000) / PATH_SPAWN_INTERVAL_MS) {
+        spawnPath(now, iMin, iMax, jMin, jMax);
+      }
+
       const mwx = mouseX + camX - halfW;
       const mwy = mouseY + camY - halfH;
       const mouseInside = mouseX > -9000;
@@ -366,7 +435,7 @@
       const flatNeeded = 2 * cellCount;
       if (flatBuf.length < flatNeeded) flatBuf = new Float64Array(flatNeeded * 2);
 
-      type V = { cx: number; cy: number; r: number; px: number; py: number; c: Cell; fill: string; fillAlpha: number };
+      type V = { cx: number; cy: number; r: number; px: number; py: number; c: Cell; key: string; fill: string; fillAlpha: number };
       const visible: V[] = [];
       let n = 0;
 
@@ -400,7 +469,7 @@
           flatBuf[n * 2 + 1] = py;
           // fill / fillAlpha are filled in below, after Voronoi build,
           // when each cell's polygon-canvas overlap is known.
-          visible.push({ cx, cy, r, px, py, c, fill: '', fillAlpha: 0 });
+          visible.push({ cx, cy, r, px, py, c, key: cellKey(i, j), fill: '', fillAlpha: 0 });
           n++;
         }
       }
@@ -490,7 +559,19 @@
         // fully decayed cells light up under the cursor.
         const m = Math.min(1, Math.abs(c.thetaDot) / MOMENTUM_REF);
         const boost = MOMENTUM_BOOST * m * m;
-        v.fillAlpha = Math.min(1, baseAlpha + boost);
+        // Path-light: max-blend the largest active path contribution
+        // for this cell against the veil. Linear fade from 1 → 0 over
+        // PATH_FADE_MS starting at this cell's individual ignition time.
+        let lit = 0;
+        for (let pi = 0; pi < activePaths.length; pi++) {
+          const t = activePaths[pi].cellLitAt.get(v.key);
+          if (t === undefined) continue;
+          const age = now - t;
+          if (age < 0 || age > PATH_FADE_MS) continue;
+          const a = 1 - age / PATH_FADE_MS;
+          if (a > lit) lit = a;
+        }
+        v.fillAlpha = Math.max(Math.min(1, baseAlpha + boost), lit);
         v.fill = `rgba(${ACCENT[0]},${ACCENT[1]},${ACCENT[2]},${v.fillAlpha})`;
 
         bboxesBuf[k * 4]     = Math.max(0, Math.floor(bbMinX));
