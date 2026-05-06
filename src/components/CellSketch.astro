@@ -120,26 +120,24 @@
       dotCanvas.width = phys;
       dotCanvas.height = phys;
       const dctx = dotCanvas.getContext('2d')!;
-      const img = dctx.createImageData(phys, phys);
-      const data = img.data;
-      const decayPhys = DOT_DECAY * dpr;
-      const cx = phys / 2 - 0.5;
-      const cy = phys / 2 - 0.5;
-      const cR = FG[0], cG = FG[1], cB = FG[2];
-      for (let py = 0; py < phys; py++) {
-        for (let px = 0; px < phys; px++) {
-          const dx = px - cx;
-          const dy = py - cy;
-          const r = Math.sqrt(dx * dx + dy * dy);
-          const a = Math.exp(-r / decayPhys);
-          const idx = (py * phys + px) * 4;
-          data[idx]     = cR;
-          data[idx + 1] = cG;
-          data[idx + 2] = cB;
-          data[idx + 3] = (a * 255) | 0;
-        }
+      // Approximate the previous exp(-r / DOT_DECAY) sprite with a
+      // radial gradient fill rather than per-pixel putImageData. Mobile
+      // Chrome rendered the ImageData path as horizontal colored stripes;
+      // mobile Firefox rendered it as solid purple blocks. Gradient fills
+      // are native and don't trip the same browser bugs, while the
+      // multi-stop curve closely matches the original exponential halo.
+      const cx = phys / 2;
+      const cy = phys / 2;
+      const radius = DOT_HALF * dpr;
+      const grad = dctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+      const N_STOPS = 12;
+      for (let i = 0; i <= N_STOPS; i++) {
+        const t = i / N_STOPS;
+        const a = Math.exp(-(t * DOT_HALF) / DOT_DECAY);
+        grad.addColorStop(t, `rgba(${FG[0]},${FG[1]},${FG[2]},${a})`);
       }
-      dctx.putImageData(img, 0, 0);
+      dctx.fillStyle = grad;
+      dctx.fillRect(0, 0, phys, phys);
     }
 
     // ----- SDF rendering constants & precomputed tables -----
