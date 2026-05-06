@@ -1,0 +1,74 @@
+---
+/*
+ * Stroke sketch — 笔 / one character per cue, camera moves between them.
+ *
+ * Scaffold only. The previous prototype (per-stroke particles in 2D
+ * fake-3D, dust/flood formations) read flat and was scrapped. The
+ * replacement model:
+ *
+ *   - each cue picks ONE character + a camera station {R, yaw, pitch, dx, dy}
+ *   - strokes are decomposed using MMH medians over the Huiwen Mincho
+ *     outline (see scripts/build-strokes.py); each stroke becomes its
+ *     own offscreen bitmap, pre-rendered once at sketch init
+ *   - 3D camera projects each stroke; size ∝ 1/R² so distance reads
+ *     dramatically; depth-of-field via ctx.filter blur, full opacity
+ *   - section transitions = camera lerps along a non-linear path
+ *     between stations, fixed ~1.2s duration
+ *
+ * Implementation deferred — this file currently just hosts the canvas
+ * and the cue/pause listeners so the essay still loads while the
+ * stage is being rewritten.
+ */
+---
+
+<canvas id="stroke"></canvas>
+
+<script>
+  import { mountSketch } from '../lib/sketch-lifecycle';
+
+  mountSketch(() => {
+    const canvas = document.getElementById('stroke') as HTMLCanvasElement | null;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    let w = 0, h = 0;
+
+    function resize() {
+      const rect = canvas!.getBoundingClientRect();
+      w = rect.width;
+      h = rect.height;
+      canvas!.width = w * dpr;
+      canvas!.height = h * dpr;
+      ctx!.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx!.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#0f0f10';
+      ctx!.fillRect(0, 0, w, h);
+    }
+    resize();
+
+    const onCue = (_e: Event) => { /* TODO: station lerp */ };
+    const onPause = (_e: Event) => { /* TODO */ };
+    window.addEventListener('stage:cue', onCue);
+    window.addEventListener('stage:pause', onPause);
+    window.addEventListener('resize', resize);
+    const ro = new ResizeObserver(() => resize());
+    ro.observe(canvas);
+
+    return () => {
+      window.removeEventListener('stage:cue', onCue);
+      window.removeEventListener('stage:pause', onPause);
+      window.removeEventListener('resize', resize);
+      ro.disconnect();
+    };
+  });
+</script>
+
+<style>
+  canvas#stroke {
+    display: block;
+    width: 100%;
+    height: 100%;
+    background: var(--bg);
+  }
+</style>

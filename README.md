@@ -1,43 +1,30 @@
-# Astro Starter Kit: Minimal
+# 眠海 / SUNKEN KEEP
 
-```sh
-npm create astro@latest -- --template minimal
-```
+A small gallery of generative and interactive sketches.
 
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
+🌊 **Live**: [sunkenkeep.space](https://sunkenkeep.space)
 
-## 🚀 Project Structure
+## About
 
-Inside of your Astro project, you'll see the following folders and files:
+Pieces explore generative systems, interactive dynamics, and 
+the relationship between mathematics and aesthetic experience. 
+Some works incorporate generative audio (e.g. *Clinamen*), 
+others focus on visual procedural systems (e.g. *Cell*).
 
-```text
-/
-├── public/
-├── src/
-│   └── pages/
-│       └── index.astro
-└── package.json
-```
+## Tech
 
-Astro looks for `.astro` or `.md` files in the `src/pages/` directory. Each page is exposed as a route based on its file name.
+- [Astro](https://astro.build) — static site framework
+- Vanilla JavaScript / Canvas / Web Audio API for sketches
+- Custom domain via [sunkenkeep.space](https://sunkenkeep.space)
 
-There's nothing special about `src/components/`, but that's where we like to put any Astro/React/Vue/Svelte/Preact components.
+## Sketches
 
-Any static assets, like images, can be placed in the `public/` directory.
+- **Cell** (2026-05) — Voronoi tessellation driven by coupled pendulum dynamics
+- **Clinamen** (2026-04) — Generative bell synthesis triggered by floating river lanterns
+- **Smoke** (2026-04) — Particle-based smoke field
+- **Flow Field** (2026-04) — Drifting point lattice
 
-## 🧞 Commands
+## Author
 
-All commands are run from the root of the project, from a terminal:
-
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `npm install`             | Installs dependencies                            |
-| `npm run dev`             | Starts local dev server at `localhost:4321`      |
-| `npm run build`           | Build your production site to `./dist/`          |
-| `npm run preview`         | Preview your build locally, before deploying     |
-| `npm run astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `npm run astro -- --help` | Get help using the Astro CLI                     |
-
-## 👀 Want to learn more?
-
-Feel free to check [our documentation](https://docs.astro.build) or jump into our [Discord server](https://astro.build/chat).
+Ruiting Ma — currently exploring audio AI and generative models 
+as part of a Master of AI at Monash University.

@@ -3,6 +3,7 @@ import { getCollection, render } from 'astro:content';
 import EssayLayout from '../../layouts/EssayLayout.astro';
 import BeginSketch from '../../components/BeginSketch.astro';
 import ThreadSketch from '../../components/ThreadSketch.astro';
+import StrokeSketch from '../../components/StrokeSketch.astro';
 
 export async function getStaticPaths() {
   const essays = await getCollection('essays', (e) => import.meta.env.DEV || e.data.published);
@@ -19,6 +20,7 @@ export async function getStaticPaths() {
 const STAGES = {
   begin: BeginSketch,
   thread: ThreadSketch,
+  stroke: StrokeSketch,
 } as const;
 type StageKey = keyof typeof STAGES;
 

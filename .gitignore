@@ -31,8 +31,10 @@ __pycache__/
 
 # local-only artifacts — exist on disk but not part of the deployed site
 # archive/ holds pre-2023 Hexo drafts (kept for reference, not republished)
-# data/ holds large training datasets (e.g. MNIST for the 识 sketch)
+# /data/ holds large training datasets (e.g. MNIST for the 识 sketch);
+#   leading slash anchors to repo root so public/data/ — which carries
+#   sketch-runtime JSON like strokes.json — stays trackable and shipped
 # maintenance.html is the reusable "site under maintenance" cover page
 archive/
-data/
+/data/
 maintenance.html
