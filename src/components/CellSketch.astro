@@ -74,9 +74,41 @@
     }
     const rootStyle = getComputedStyle(document.documentElement);
     const FG = parseColor(rootStyle.getPropertyValue('--fg'));
-    const BG = rootStyle.getPropertyValue('--bg').trim() || '#0f0f10';
+    const BG_STR = rootStyle.getPropertyValue('--bg').trim() || '#0f0f10';
+    const BG = parseColor(BG_STR);
+    // Cell's tint per src/lib/sketches.ts is moss. The stage <aside>
+    // sits outside the article that carries the tint-* class, so
+    // var(--accent) on the canvas resolves to fg rather than moss —
+    // we look up the moss accent directly. If Cell's tint changes in
+    // the registry, update this too.
+    const ACCENT = parseColor(rootStyle.getPropertyValue('--accent-moss'));
     const fgRgba = (a: number) => `rgba(${FG[0]},${FG[1]},${FG[2]},${a})`;
     const fgPacked = FG[0] | (FG[1] << 8) | (FG[2] << 16);
+
+    // Linear color interpolation: mix(x, y, a) = x*(1-a) + y*a. Per-cell
+    // mix factor is hashed from cell coords (stable as the camera drifts —
+    // a position-based factor would smear bands across the screen as the
+    // 1-D-noise heading swings around). The factor walks a 3-stop ramp
+    // BG → ACCENT → FG so the palette spans near-black through moss to
+    // cream rather than collapsing to a single fg/accent line.
+    const mix = (x: number, y: number, a: number) => x * (1 - a) + y * a;
+    function cellRGB(i: number, j: number): [number, number, number] {
+      const a = hash01(i, j, 7);
+      if (a < 0.5) {
+        const t = a * 2;
+        return [
+          mix(BG[0], ACCENT[0], t) | 0,
+          mix(BG[1], ACCENT[1], t) | 0,
+          mix(BG[2], ACCENT[2], t) | 0,
+        ];
+      }
+      const t = (a - 0.5) * 2;
+      return [
+        mix(ACCENT[0], FG[0], t) | 0,
+        mix(ACCENT[1], FG[1], t) | 0,
+        mix(ACCENT[2], FG[2], t) | 0,
+      ];
+    }
 
     // ----- Pre-rendered orbital point sprite (true exp decay) -----
     const DOT_HALF  = 11;
@@ -319,7 +351,7 @@
       const flatNeeded = 2 * cellCount;
       if (flatBuf.length < flatNeeded) flatBuf = new Float64Array(flatNeeded * 2);
 
-      type V = { cx: number; cy: number; r: number; px: number; py: number };
+      type V = { cx: number; cy: number; r: number; px: number; py: number; fill: string };
       const visible: V[] = [];
       let n = 0;
 
@@ -351,7 +383,9 @@
           const py = cy + r * Math.sin(c.theta);
           flatBuf[n * 2]     = px;
           flatBuf[n * 2 + 1] = py;
-          visible.push({ cx, cy, r, px, py });
+          const [cr, cg, cb] = cellRGB(i, j);
+          const fill = `rgb(${cr},${cg},${cb})`;
+          visible.push({ cx, cy, r, px, py, fill });
           n++;
         }
       }
@@ -461,10 +495,21 @@
 
       // ===== Render =====
 
-      ctx.fillStyle = BG;
+      ctx.fillStyle = BG_STR;
       ctx.fillRect(0, 0, w, h);
 
-      // ----- Layer 1: SDF inner rings (worker output) -----
+      // ----- Layer 1: per-cell Voronoi fills -----
+      // Each cell paints its hashed mix(BG, ACCENT, FG) color into its
+      // polygon. Fully opaque so subsequent layers composite cleanly on
+      // top; the SDF rings + grid lines + edges + dots sit above this.
+      for (let k = 0; k < n; k++) {
+        ctx.fillStyle = visible[k].fill;
+        ctx.beginPath();
+        voronoi.renderCell(k, ctx);
+        ctx.fill();
+      }
+
+      // ----- Layer 2: SDF inner rings (worker output) -----
       // sdfCanvas is updated asynchronously by the worker.onmessage
       // handler; until the first response arrives, sdfCanvas is blank
       // (transparent), and drawImage is a no-op. After ~1 frame,
@@ -473,7 +518,7 @@
         ctx.drawImage(sdfCanvas, 0, 0, w, h);
       }
 
-      // ----- Layer 2: grid lines -----
+      // ----- Layer 3: grid lines -----
       ctx.strokeStyle = fgRgba(0.16);
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -489,7 +534,7 @@
       }
       ctx.stroke();
 
-      // ----- Layer 3: orbital circles -----
+      // ----- Layer 4: orbital circles -----
       ctx.strokeStyle = fgRgba(0.22);
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -499,8 +544,11 @@
       }
       ctx.stroke();
 
-      // ----- Layer 4: Voronoi edges (crisp) -----
-      ctx.strokeStyle = fgRgba(0.85);
+      // ----- Layer 5: Voronoi edges (crisp, uniform dark) -----
+      // BG-toned stroke reads as a near-black grid that holds the
+      // tinted fills together; light fg edges would have been swallowed
+      // by the lighter cells.
+      ctx.strokeStyle = `rgba(${BG[0]},${BG[1]},${BG[2]},0.85)`;
       ctx.lineWidth = 1.6;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
@@ -508,7 +556,7 @@
       voronoi.render(ctx);
       ctx.stroke();
 
-      // ----- Layer 5: orbital points -----
+      // ----- Layer 6: orbital points -----
       const blitSize = DOT_HALF * 2;
       for (const v of visible) {
         ctx.drawImage(dotCanvas, v.px - DOT_HALF, v.py - DOT_HALF, blitSize, blitSize);
