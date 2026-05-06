@@ -357,6 +357,10 @@
       const omegaMag = 0.05 + hash01(i, j, 1) * 0.40;
       const sign = hashSym(i, j, 2) >= 0 ? 1 : -1;
       const groupNoise = noise2(i / TINT_GROUP_SCALE, j / TINT_GROUP_SCALE);
+      // Initial-frame cells get startAlpha=0 so the opening visual is the
+      // two seeded path-light flares rather than a uniform moss veil.
+      // Cells created after the first frame (camera drift revealing new
+      // grid coords) keep the noise-based birth tint.
       c = {
         theta: hash01(i, j, 3) * Math.PI * 2,
         thetaDot: omegaMag * sign,
@@ -365,7 +369,7 @@
         omegaPhase: hash01(i, j, 6) * Math.PI * 2,
         rFactor: 0.7 + hash01(i, j, 4) * 0.15,
         birthTime: -1,
-        startAlpha: Math.pow(groupNoise, TINT_BIAS) * MAX_TINT,
+        startAlpha: isFirstFrame ? 0 : Math.pow(groupNoise, TINT_BIAS) * MAX_TINT,
       };
       cells.set(k, c);
       return c;
@@ -552,6 +556,8 @@
     let lastT = performance.now();
     let aborted = false;
     let rafId = 0;
+    let initialPathsSpawned = false;
+    let isFirstFrame = true;
     const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
     function frame(now: number) {
@@ -584,6 +590,11 @@
       // of frame timing.
       for (let pi = activePaths.length - 1; pi >= 0; pi--) {
         if (activePaths[pi].endTime < now) activePaths.splice(pi, 1);
+      }
+      if (!initialPathsSpawned) {
+        spawnPath(now, iMin, iMax, jMin, jMax);
+        spawnPath(now, iMin, iMax, jMin, jMax);
+        initialPathsSpawned = true;
       }
       if (Math.random() < (dt * 1000) / PATH_SPAWN_INTERVAL_MS) {
         spawnPath(now, iMin, iMax, jMin, jMax);
@@ -676,6 +687,8 @@
           n++;
         }
       }
+
+      isFirstFrame = false;
 
       const used = flatBuf.subarray(0, n * 2);
       const delaunay = new Delaunay(used);
