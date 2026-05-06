@@ -120,7 +120,8 @@
     // max-blends again with the veil + momentum boost.
     const PATH_SPAWN_INTERVAL_MS = 5000; // mean ms between spawns (Poisson)
     const PATH_STEP_MS           = 110;  // ms between successive cell ignitions along the line
-    const PATH_FADE_MS           = 3500; // each cell's fade duration
+    const PATH_RISE_MS           = 400;  // smooth ramp 0 → peak (envelope's attack phase)
+    const PATH_FADE_MS           = 3500; // peak → 0 (envelope's release phase)
     const PATH_FADE_GAMMA        = 0.5;  // <1 sustains brightness, falls fast at end (sqrt curve)
     const PATH_PEAK_ALPHA        = 0.70; // peak alpha at the line core (full opacity ≡ 1)
     const PATH_MIN_LENGTH        = 7;    // Chebyshev cells; below this we skip & retry
@@ -418,6 +419,7 @@
           now +
           (linePath.length - 1) * PATH_STEP_MS +
           maxSpreadDist * PATH_SPREAD_STEP_MS +
+          PATH_RISE_MS +
           PATH_FADE_MS,
       });
     }
@@ -502,18 +504,29 @@
           // Path-lit alpha for this cell at `now`. Computed here (before
           // physics integration) so it can both drive the pendulum kick
           // and be stored on V for the render pass — single lookup
-          // instead of two. Non-linear fade: pow(1 - age/fade, gamma)
-          // with gamma < 1 sustains brightness through most of fadeMs
-          // and snaps off at the end.
+          // instead of two. Envelope is attack + release:
+          //   age ∈ [0, RISE_MS): smoothstep ramp 0 → peak (the "inertia"
+          //     ramp the orbital pendulum already exhibits — matches it).
+          //   age ∈ [RISE_MS, RISE_MS+FADE_MS): pow(1 − t, FADE_GAMMA)
+          //     with gamma < 1 — sustains then snaps.
           let curLit = 0;
           if (activePaths.length > 0) {
             const key = cellKey(i, j);
+            const totalMs = PATH_RISE_MS + PATH_FADE_MS;
             for (let pi = 0; pi < activePaths.length; pi++) {
               const entry = activePaths[pi].cells.get(key);
               if (!entry) continue;
               const age = now - entry.litAt;
-              if (age < 0 || age > PATH_FADE_MS) continue;
-              const a = entry.peak * Math.pow(1 - age / PATH_FADE_MS, PATH_FADE_GAMMA);
+              if (age < 0 || age >= totalMs) continue;
+              let envelope: number;
+              if (age < PATH_RISE_MS) {
+                const t = age / PATH_RISE_MS;
+                envelope = t * t * (3 - 2 * t); // smoothstep
+              } else {
+                const fadeT = (age - PATH_RISE_MS) / PATH_FADE_MS;
+                envelope = Math.pow(1 - fadeT, PATH_FADE_GAMMA);
+              }
+              const a = entry.peak * envelope;
               if (a > curLit) curLit = a;
             }
           }
