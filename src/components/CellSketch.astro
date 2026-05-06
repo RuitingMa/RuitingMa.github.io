@@ -75,7 +75,6 @@
     const rootStyle = getComputedStyle(document.documentElement);
     const FG = parseColor(rootStyle.getPropertyValue('--fg'));
     const BG_STR = rootStyle.getPropertyValue('--bg').trim() || '#0f0f10';
-    const BG = parseColor(BG_STR);
     // Cell's tint per src/lib/sketches.ts is moss. The stage <aside>
     // sits outside the article that carries the tint-* class, so
     // var(--accent) on the canvas resolves to fg rather than moss —
@@ -85,30 +84,13 @@
     const fgRgba = (a: number) => `rgba(${FG[0]},${FG[1]},${FG[2]},${a})`;
     const fgPacked = FG[0] | (FG[1] << 8) | (FG[2] << 16);
 
-    // Linear color interpolation: mix(x, y, a) = x*(1-a) + y*a. Per-cell
-    // mix factor is hashed from cell coords (stable as the camera drifts —
-    // a position-based factor would smear bands across the screen as the
-    // 1-D-noise heading swings around). The factor walks a 3-stop ramp
-    // BG → ACCENT → FG so the palette spans near-black through moss to
-    // cream rather than collapsing to a single fg/accent line.
-    const mix = (x: number, y: number, a: number) => x * (1 - a) + y * a;
-    function cellRGB(i: number, j: number): [number, number, number] {
-      const a = hash01(i, j, 7);
-      if (a < 0.5) {
-        const t = a * 2;
-        return [
-          mix(BG[0], ACCENT[0], t) | 0,
-          mix(BG[1], ACCENT[1], t) | 0,
-          mix(BG[2], ACCENT[2], t) | 0,
-        ];
-      }
-      const t = (a - 0.5) * 2;
-      return [
-        mix(ACCENT[0], FG[0], t) | 0,
-        mix(ACCENT[1], FG[1], t) | 0,
-        mix(ACCENT[2], FG[2], t) | 0,
-      ];
-    }
+    // Per-cell tint as a translucent moss veil over BG. Hash-keyed alpha
+    // (stable across camera drift) modulated against MAX_TINT — full
+    // 1.0 alpha would obliterate the dark background and the light
+    // overlay layers (rings, grid, dots) lose their substrate.
+    const MAX_TINT = 0.4;
+    const cellFill = (i: number, j: number) =>
+      `rgba(${ACCENT[0]},${ACCENT[1]},${ACCENT[2]},${hash01(i, j, 7) * MAX_TINT})`;
 
     // ----- Pre-rendered orbital point sprite (true exp decay) -----
     const DOT_HALF  = 11;
@@ -383,9 +365,7 @@
           const py = cy + r * Math.sin(c.theta);
           flatBuf[n * 2]     = px;
           flatBuf[n * 2 + 1] = py;
-          const [cr, cg, cb] = cellRGB(i, j);
-          const fill = `rgb(${cr},${cg},${cb})`;
-          visible.push({ cx, cy, r, px, py, fill });
+          visible.push({ cx, cy, r, px, py, fill: cellFill(i, j) });
           n++;
         }
       }
@@ -498,10 +478,10 @@
       ctx.fillStyle = BG_STR;
       ctx.fillRect(0, 0, w, h);
 
-      // ----- Layer 1: per-cell Voronoi fills -----
-      // Each cell paints its hashed mix(BG, ACCENT, FG) color into its
-      // polygon. Fully opaque so subsequent layers composite cleanly on
-      // top; the SDF rings + grid lines + edges + dots sit above this.
+      // ----- Layer 1: per-cell translucent moss veil -----
+      // Each cell paints accent at hash-modulated alpha over the dark
+      // BG. Subsequent layers (SDF rings, grid, edges, dots) keep their
+      // light strokes and composite over the veil.
       for (let k = 0; k < n; k++) {
         ctx.fillStyle = visible[k].fill;
         ctx.beginPath();
@@ -544,11 +524,8 @@
       }
       ctx.stroke();
 
-      // ----- Layer 5: Voronoi edges (crisp, uniform dark) -----
-      // BG-toned stroke reads as a near-black grid that holds the
-      // tinted fills together; light fg edges would have been swallowed
-      // by the lighter cells.
-      ctx.strokeStyle = `rgba(${BG[0]},${BG[1]},${BG[2]},0.85)`;
+      // ----- Layer 5: Voronoi edges (crisp) -----
+      ctx.strokeStyle = fgRgba(0.85);
       ctx.lineWidth = 1.6;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
