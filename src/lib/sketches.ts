@@ -25,6 +25,7 @@ export type Sketch = {
 };
 
 export const SKETCHES: Sketch[] = [
+  { slug: 'cell',        href: '/sketches/cell/',        title: 'Cell',       date: '2026-05-06', kind: 'GENERATIVE',         summary: '格中钟摆。',     tint: 'moss' },
   { slug: 'shi',         href: '/sketches/shi/',         title: '识',          date: '2026-04-22', kind: 'AI · INTERACTIVE',   summary: '机器识字。',     tint: 'moss' },
   { slug: 'clinamen',    href: '/sketches/clinamen/',    title: 'Clinamen',   date: '2026-04-20', kind: 'AUDIO · GENERATIVE', summary: '河灯散布于水面。', tint: 'rust', published: true },
   { slug: 'smoke',       href: '/sketches/smoke/',       title: 'Smoke',      date: '2026-04-19', kind: 'GENERATIVE',         summary: '烟。',           tint: 'plum', published: true },

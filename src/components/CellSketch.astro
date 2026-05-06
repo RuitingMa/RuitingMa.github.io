@@ -1,0 +1,542 @@
+---
+---
+
+<canvas id="cell"></canvas>
+
+<script>
+  // Pendulum-on-circle Voronoi grid.
+  //
+  // ──────────────────────────────────────────────────────────────────
+  // Architecture note: the inner ring decoration is rendered as a
+  // signed-distance-field (SDF) over the Voronoi cells. Polygon-edge
+  // representations are discontinuous in the seed positions (Voronoi
+  // edges generate / cancel as cells exchange adjacency), so analytical
+  // inset polygons jump topologically across frames. The SDF
+  //
+  //     SDF(p) = min_{j ≠ i} (|p − s_j|² − |p − s_i|²) / (2 |s_j − s_i|)
+  //
+  // depends only on seed positions, which move continuously.
+  //
+  // The per-pixel SDF inner loop is the dominant cost (profile shows
+  // ~85% of frame self-time at ~38ms/frame). It's offloaded to a
+  // dedicated worker (cell-sdf-worker.ts). Main runs physics + Voronoi
+  // build + bbox extraction + crisp Voronoi-edge stroke; worker only
+  // does the SDF inner loop. Two-buffer ping-pong over a transferable
+  // Uint32Array means main and worker overlap — the displayed rings
+  // are one frame stale from physics, which at this animation pace
+  // is invisible.
+  // ──────────────────────────────────────────────────────────────────
+  //
+  // Free-motion equation (no cursor):
+  //
+  //     ω₀(θ) = ω_base · (1 + A · cos(θ + φ))     -- angle-dependent target
+  //     θ̈    = γ · (ω₀(θ) − θ̇)                   -- relaxation toward target
+  //
+  // Cursor adds a pendulum torque:
+  //     θ̈ += -k(d) · sin(θ − θ_cursor),   k(d) = K_MAX · exp(-d/τ)
+  //
+  // Camera drifts at ~1 cell per 5s with a low-frequency heading.
+  //
+  // Lifecycle: see src/lib/sketch-lifecycle.ts.
+  import { mountSketch } from '../lib/sketch-lifecycle';
+  import { Delaunay } from 'd3-delaunay';
+  // Vite's `?worker` suffix yields a default export that's a Worker
+  // constructor; the worker entry is bundled as a separate chunk.
+  import SdfWorkerCtor from '../lib/cell-sdf-worker.ts?worker';
+
+  mountSketch(() => {
+    const canvas = document.getElementById('cell') as HTMLCanvasElement | null;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d')!;
+    const dpr = window.devicePixelRatio || 1;
+    let w = 0, h = 0;
+    let CELL_SIZE = 80;
+
+    // ----- Color setup -----
+    function parseColor(s: string): [number, number, number] {
+      s = s.trim();
+      let m = s.match(/^#([0-9a-f]{6})$/i);
+      if (m) return [parseInt(m[1].slice(0, 2), 16), parseInt(m[1].slice(2, 4), 16), parseInt(m[1].slice(4, 6), 16)];
+      m = s.match(/^#([0-9a-f]{3})$/i);
+      if (m) return [parseInt(m[1][0] + m[1][0], 16), parseInt(m[1][1] + m[1][1], 16), parseInt(m[1][2] + m[1][2], 16)];
+      m = s.match(/^rgba?\(([^)]+)\)$/i);
+      if (m) {
+        const p = m[1].split(',').map((t) => parseFloat(t.trim()));
+        return [p[0] | 0, p[1] | 0, p[2] | 0];
+      }
+      return [230, 226, 214];
+    }
+    const rootStyle = getComputedStyle(document.documentElement);
+    const FG = parseColor(rootStyle.getPropertyValue('--fg'));
+    const BG = rootStyle.getPropertyValue('--bg').trim() || '#0f0f10';
+    const fgRgba = (a: number) => `rgba(${FG[0]},${FG[1]},${FG[2]},${a})`;
+    const fgPacked = FG[0] | (FG[1] << 8) | (FG[2] << 16);
+
+    // ----- Pre-rendered orbital point sprite (true exp decay) -----
+    const DOT_HALF  = 11;
+    const DOT_DECAY =  1.9;
+    let dotCanvas: HTMLCanvasElement;
+
+    function rebuildDotSprite() {
+      const phys = DOT_HALF * 2 * dpr;
+      dotCanvas = document.createElement('canvas');
+      dotCanvas.width = phys;
+      dotCanvas.height = phys;
+      const dctx = dotCanvas.getContext('2d')!;
+      const img = dctx.createImageData(phys, phys);
+      const data = img.data;
+      const decayPhys = DOT_DECAY * dpr;
+      const cx = phys / 2 - 0.5;
+      const cy = phys / 2 - 0.5;
+      const cR = FG[0], cG = FG[1], cB = FG[2];
+      for (let py = 0; py < phys; py++) {
+        for (let px = 0; px < phys; px++) {
+          const dx = px - cx;
+          const dy = py - cy;
+          const r = Math.sqrt(dx * dx + dy * dy);
+          const a = Math.exp(-r / decayPhys);
+          const idx = (py * phys + px) * 4;
+          data[idx]     = cR;
+          data[idx + 1] = cG;
+          data[idx + 2] = cB;
+          data[idx + 3] = (a * 255) | 0;
+        }
+      }
+      dctx.putImageData(img, 0, 0);
+    }
+
+    // ----- SDF rendering constants & precomputed tables -----
+    const FEATHER     = 0.75;
+    const RING_DECAY  = 0.55;
+    const PEAK        = 0.55;
+    const MAX_RINGS   = 5;
+
+    const LUT_SIZE      = 256;
+    const FEATHER_RANGE = 5 * FEATHER;
+    const LUT_SCALE     = LUT_SIZE / FEATHER_RANGE;
+    const FEATHER_LUT   = new Float32Array(LUT_SIZE + 1);
+    for (let i = 0; i <= LUT_SIZE; i++) {
+      FEATHER_LUT[i] = i >= LUT_SIZE ? 0 : Math.exp(-(i / LUT_SCALE) / FEATHER);
+    }
+    const RING_FADES = new Float32Array(MAX_RINGS + 1);
+    for (let k = 1; k <= MAX_RINGS; k++) {
+      RING_FADES[k] = Math.exp(-(k - 1) * RING_DECAY) * PEAK;
+    }
+
+    let layerSpacing = 0;
+    let skipDist     = 0;
+
+    // ----- SDF render plumbing -----
+    // sdfCanvas holds the most recent SDF render result for compositing
+    // each frame. The worker writes into one of two pooled Uint32Arrays
+    // (transferable, ping-ponged); on response we wrap the buffer as
+    // ImageData and putImageData it onto sdfCanvas, then push the buffer
+    // back into the pool.
+    let sdfCanvas: HTMLCanvasElement;
+    let sdfCtx: CanvasRenderingContext2D;
+    const sdfBufferPool: Uint32Array[] = [];
+    let sdfWorkerInflight = 0;
+    let sdfHasFirstResult = false;
+    let sdfSeqNo = 0;
+    const worker = new SdfWorkerCtor();
+
+    worker.addEventListener('message', (e: MessageEvent) => {
+      const msg = e.data as { type: 'result'; seqNo: number; sdfBuffer: Uint32Array };
+      if (msg.type !== 'result') return;
+      sdfWorkerInflight--;
+
+      // Wrap the worker-filled u32 buffer as an ImageData and blit onto
+      // sdfCanvas. ImageData expects a Uint8ClampedArray view of the
+      // same backing buffer — no copy.
+      const u8 = new Uint8ClampedArray(msg.sdfBuffer.buffer);
+      const img = new ImageData(u8, sdfCanvas.width, sdfCanvas.height);
+      sdfCtx.putImageData(img, 0, 0);
+      sdfHasFirstResult = true;
+
+      // Recycle.
+      sdfBufferPool.push(msg.sdfBuffer);
+    });
+
+    // ----- Persistent main-side buffers (grown on demand) -----
+    let flatBuf         = new Float64Array(0);   // seed positions, [px, py] pairs
+    let neighborData    = new Float32Array(0);   // packed [nx, ny, 1/(2|d|)] triples
+    let neighborOffsets = new Uint32Array(0);
+    let neighborCounts  = new Uint16Array(0);
+    let bboxesBuf       = new Float32Array(0);   // [xMin, yMin, xMax, yMax] per cell
+
+    function resize() {
+      const rect = canvas!.getBoundingClientRect();
+      w = rect.width;
+      h = rect.height;
+      canvas!.width = w * dpr;
+      canvas!.height = h * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      CELL_SIZE = Math.max(56, Math.min(96, Math.max(w, h) / 10));
+      layerSpacing = CELL_SIZE * 0.13;
+      skipDist     = (MAX_RINGS + 0.5) * layerSpacing + 4 * FEATHER;
+      rebuildDotSprite();
+
+      sdfCanvas = document.createElement('canvas');
+      sdfCanvas.width = Math.max(1, Math.floor(w));
+      sdfCanvas.height = Math.max(1, Math.floor(h));
+      sdfCtx = sdfCanvas.getContext('2d')!;
+
+      // Reset the SDF pool. Any inflight buffers are dropped on the
+      // floor (their backing memory was transferred to the worker — when
+      // it eventually replies we'll just discard the stale buffer in the
+      // message handler since its size won't match the new sdfCanvas).
+      sdfBufferPool.length = 0;
+      sdfHasFirstResult = false;
+      const pixelCount = sdfCanvas.width * sdfCanvas.height;
+      // Two buffers — enough for a 1-frame pipeline (one in worker, one
+      // available for the next post). A third would only help if the
+      // worker were faster than main, which isn't the case here.
+      sdfBufferPool.push(new Uint32Array(pixelCount));
+      sdfBufferPool.push(new Uint32Array(pixelCount));
+    }
+    resize();
+
+    // ----- Hash & noise -----
+    const hashU32 = (a: number, b: number, salt: number) => {
+      let h = ((a | 0) * 374761393 + (b | 0) * 668265263 + (salt | 0) * 1274126177) | 0;
+      h = Math.imul(h ^ (h >>> 13), 1274126177);
+      h = h ^ (h >>> 16);
+      return h >>> 0;
+    };
+    const hash01  = (a: number, b: number, s: number) => hashU32(a, b, s) / 4294967295;
+    const hashSym = (a: number, b: number, s: number) => hash01(a, b, s) * 2 - 1;
+    const smoothstep = (t: number) => t * t * (3 - 2 * t);
+    const noise1 = (x: number) => {
+      const xi = Math.floor(x);
+      const xf = x - xi;
+      const u = smoothstep(xf);
+      const a = hash01(xi, 0, 9001);
+      const b = hash01(xi + 1, 0, 9001);
+      return a * (1 - u) + b * u;
+    };
+
+    // ----- Per-cell state -----
+    type Cell = {
+      theta: number;
+      thetaDot: number;
+      omegaBase: number;
+      omegaAmp: number;
+      omegaPhase: number;
+      rFactor: number;
+    };
+    const cells = new Map<string, Cell>();
+    const cellKey = (i: number, j: number) => `${i},${j}`;
+
+    function ensureCell(i: number, j: number): Cell {
+      const k = cellKey(i, j);
+      let c = cells.get(k);
+      if (c) return c;
+      const omegaMag = 0.05 + hash01(i, j, 1) * 0.40;
+      const sign = hashSym(i, j, 2) >= 0 ? 1 : -1;
+      c = {
+        theta: hash01(i, j, 3) * Math.PI * 2,
+        thetaDot: omegaMag * sign,
+        omegaBase: omegaMag * sign,
+        omegaAmp: 0.7 + hash01(i, j, 5) * 1.0,
+        omegaPhase: hash01(i, j, 6) * Math.PI * 2,
+        rFactor: 0.7 + hash01(i, j, 4) * 0.15,
+      };
+      cells.set(k, c);
+      return c;
+    }
+
+    function pruneCells(iMin: number, iMax: number, jMin: number, jMax: number) {
+      for (const k of cells.keys()) {
+        const idx = k.indexOf(',');
+        const i = +k.slice(0, idx);
+        const j = +k.slice(idx + 1);
+        if (i < iMin || i > iMax || j < jMin || j > jMax) cells.delete(k);
+      }
+    }
+
+    // ----- Pointer / pause / resize -----
+    let mouseX = -9999, mouseY = -9999;
+    const onPointerMove = (e: PointerEvent) => {
+      const rect = canvas!.getBoundingClientRect();
+      mouseX = e.clientX - rect.left;
+      mouseY = e.clientY - rect.top;
+    };
+    const onPointerLeave = () => { mouseX = -9999; mouseY = -9999; };
+    canvas.addEventListener('pointermove', onPointerMove);
+    canvas.addEventListener('pointerleave', onPointerLeave);
+
+    let paused = false;
+    const onPause = (e: Event) => { paused = !!(e as CustomEvent).detail?.paused; };
+    window.addEventListener('stage:pause', onPause);
+    window.addEventListener('resize', resize);
+
+    let camX = 0, camY = 0;
+    const K_MAX = 2.0;
+    const GAMMA = 0.15;
+
+    let lastT = performance.now();
+    let aborted = false;
+    let rafId = 0;
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    function frame(now: number) {
+      if (aborted) return;
+      if (!reduced) rafId = requestAnimationFrame(frame);
+
+      let dt = (now - lastT) / 1000;
+      lastT = now;
+      if (dt > 0.05) dt = 0.05;
+      const stepDt = paused ? 0 : dt;
+
+      const heading = noise1(now * 0.00008) * Math.PI * 2;
+      const speed = CELL_SIZE / 5;
+      camX += Math.cos(heading) * speed * stepDt;
+      camY += Math.sin(heading) * speed * stepDt;
+
+      const halfW = w / 2, halfH = h / 2;
+      const iMin = Math.floor((camX - halfW) / CELL_SIZE) - 1;
+      const iMax = Math.floor((camX + halfW) / CELL_SIZE) + 1;
+      const jMin = Math.floor((camY - halfH) / CELL_SIZE) - 1;
+      const jMax = Math.floor((camY + halfH) / CELL_SIZE) + 1;
+      pruneCells(iMin, iMax, jMin, jMax);
+
+      const mwx = mouseX + camX - halfW;
+      const mwy = mouseY + camY - halfH;
+      const mouseInside = mouseX > -9000;
+      const K_DECAY = CELL_SIZE * 0.85;
+
+      const cellCount = (iMax - iMin + 1) * (jMax - jMin + 1);
+      const flatNeeded = 2 * cellCount;
+      if (flatBuf.length < flatNeeded) flatBuf = new Float64Array(flatNeeded * 2);
+
+      type V = { cx: number; cy: number; r: number; px: number; py: number };
+      const visible: V[] = [];
+      let n = 0;
+
+      for (let j = jMin; j <= jMax; j++) {
+        for (let i = iMin; i <= iMax; i++) {
+          const c = ensureCell(i, j);
+          const cwx = (i + 0.5) * CELL_SIZE;
+          const cwy = (j + 0.5) * CELL_SIZE;
+          const cx  = cwx - camX + halfW;
+          const cy  = cwy - camY + halfH;
+          const r   = (CELL_SIZE / 2) * c.rFactor;
+
+          if (stepDt > 0) {
+            const omegaTarget = c.omegaBase * (1 + c.omegaAmp * Math.cos(c.theta + c.omegaPhase));
+            let dd = GAMMA * (omegaTarget - c.thetaDot);
+            if (mouseInside) {
+              const dx = mwx - cwx;
+              const dy = mwy - cwy;
+              const d = Math.sqrt(dx * dx + dy * dy);
+              const k = K_MAX * Math.exp(-d / K_DECAY);
+              const tc = Math.atan2(dy, dx);
+              dd += -k * Math.sin(c.theta - tc);
+            }
+            c.thetaDot += dd * stepDt;
+            c.theta    += c.thetaDot * stepDt;
+          }
+
+          const px = cx + r * Math.cos(c.theta);
+          const py = cy + r * Math.sin(c.theta);
+          flatBuf[n * 2]     = px;
+          flatBuf[n * 2 + 1] = py;
+          visible.push({ cx, cy, r, px, py });
+          n++;
+        }
+      }
+
+      const used = flatBuf.subarray(0, n * 2);
+      const delaunay = new Delaunay(used);
+      const voronoi = delaunay.voronoi([0, 0, w, h]);
+
+      // ----- Build packed neighbor data + per-cell bboxes for the worker.
+      // bboxes come from voronoi.cellPolygon(k) for tightness; conservative
+      // bboxes derived from neighbor distances would inflate the worker's
+      // pixel count by ~4× and dwarf any savings from skipping cellPolygon.
+      if (neighborOffsets.length < n) {
+        neighborOffsets = new Uint32Array(n * 2);
+        neighborCounts  = new Uint16Array(n * 2);
+      }
+      if (bboxesBuf.length < n * 4) {
+        bboxesBuf = new Float32Array(n * 8);
+      }
+      let off = 0;
+      for (let k = 0; k < n; k++) {
+        neighborOffsets[k] = off;
+        let count = 0;
+        const sx = used[k * 2];
+        const sy = used[k * 2 + 1];
+        for (const j of voronoi.neighbors(k)) {
+          if (j < 0 || j >= n) continue;
+          if (off + 3 > neighborData.length) {
+            const grown = new Float32Array(Math.max(neighborData.length * 2, off + 3, 1024));
+            grown.set(neighborData);
+            neighborData = grown;
+          }
+          const njx = used[j * 2];
+          const njy = used[j * 2 + 1];
+          const ddx = njx - sx;
+          const ddy = njy - sy;
+          const sdx2 = 2 * Math.sqrt(ddx * ddx + ddy * ddy);
+          neighborData[off]     = njx;
+          neighborData[off + 1] = njy;
+          neighborData[off + 2] = 1 / sdx2;
+          off += 3;
+          count++;
+        }
+        neighborCounts[k] = count;
+      }
+
+      const sdfW = sdfCanvas.width;
+      const sdfH = sdfCanvas.height;
+      for (let k = 0; k < n; k++) {
+        const polyRaw = voronoi.cellPolygon(k);
+        if (!polyRaw) {
+          bboxesBuf[k * 4]     = 0;
+          bboxesBuf[k * 4 + 1] = 0;
+          bboxesBuf[k * 4 + 2] = 0;
+          bboxesBuf[k * 4 + 3] = 0;
+          continue;
+        }
+        let bbMinX = Infinity, bbMinY = Infinity, bbMaxX = -Infinity, bbMaxY = -Infinity;
+        for (const p of polyRaw) {
+          if (p[0] < bbMinX) bbMinX = p[0];
+          if (p[0] > bbMaxX) bbMaxX = p[0];
+          if (p[1] < bbMinY) bbMinY = p[1];
+          if (p[1] > bbMaxY) bbMaxY = p[1];
+        }
+        bboxesBuf[k * 4]     = Math.max(0, Math.floor(bbMinX));
+        bboxesBuf[k * 4 + 1] = Math.max(0, Math.floor(bbMinY));
+        bboxesBuf[k * 4 + 2] = Math.min(sdfW, Math.ceil(bbMaxX));
+        bboxesBuf[k * 4 + 3] = Math.min(sdfH, Math.ceil(bbMaxY));
+      }
+
+      // ----- Post the SDF pass to the worker, if the pool has capacity.
+      // Pool depth 2 means we tolerate up to 2 in flight; once main
+      // out-paces worker the pool empties and we just skip posting (the
+      // displayed sdfCanvas keeps showing the most recent result, which
+      // is at most ~30 ms stale at this animation pace).
+      if (sdfBufferPool.length > 0 && sdfWorkerInflight < 2) {
+        const sdfBuffer = sdfBufferPool.pop()!;
+        if (sdfBuffer.length === sdfW * sdfH) {
+          sdfSeqNo++;
+          // Send subarrays of exact length so structured clone copies
+          // only the live portion of each persistent buffer rather than
+          // its growth-headroom remainder.
+          worker.postMessage({
+            type: 'compute',
+            seqNo: sdfSeqNo,
+            positions: used,                                          // length n*2
+            neighborOffsets: neighborOffsets.subarray(0, n),
+            neighborCounts:  neighborCounts.subarray(0, n),
+            neighborData:    neighborData.subarray(0, off),
+            bboxes:          bboxesBuf.subarray(0, n * 4),
+            sdfBuffer,
+            n, w: sdfW, h: sdfH,
+            layerSpacing,
+            featherRange: FEATHER_RANGE,
+            lutScale:     LUT_SCALE,
+            featherLut:   FEATHER_LUT,
+            ringFades:    RING_FADES,
+            maxRings:     MAX_RINGS,
+            fgPacked,
+            skipDist,
+          }, [sdfBuffer.buffer]);
+          sdfWorkerInflight++;
+        } else {
+          // Stale buffer from a previous canvas size — drop it.
+        }
+      }
+
+      // ===== Render =====
+
+      ctx.fillStyle = BG;
+      ctx.fillRect(0, 0, w, h);
+
+      // ----- Layer 1: SDF inner rings (worker output) -----
+      // sdfCanvas is updated asynchronously by the worker.onmessage
+      // handler; until the first response arrives, sdfCanvas is blank
+      // (transparent), and drawImage is a no-op. After ~1 frame,
+      // rings appear.
+      if (sdfHasFirstResult) {
+        ctx.drawImage(sdfCanvas, 0, 0, w, h);
+      }
+
+      // ----- Layer 2: grid lines -----
+      ctx.strokeStyle = fgRgba(0.16);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let i = iMin; i <= iMax + 1; i++) {
+        const x = Math.round(i * CELL_SIZE - camX + halfW) + 0.5;
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+      }
+      for (let j = jMin; j <= jMax + 1; j++) {
+        const y = Math.round(j * CELL_SIZE - camY + halfH) + 0.5;
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+      }
+      ctx.stroke();
+
+      // ----- Layer 3: orbital circles -----
+      ctx.strokeStyle = fgRgba(0.22);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (const v of visible) {
+        ctx.moveTo(v.cx + v.r, v.cy);
+        ctx.arc(v.cx, v.cy, v.r, 0, Math.PI * 2);
+      }
+      ctx.stroke();
+
+      // ----- Layer 4: Voronoi edges (crisp) -----
+      ctx.strokeStyle = fgRgba(0.85);
+      ctx.lineWidth = 1.6;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      voronoi.render(ctx);
+      ctx.stroke();
+
+      // ----- Layer 5: orbital points -----
+      const blitSize = DOT_HALF * 2;
+      for (const v of visible) {
+        ctx.drawImage(dotCanvas, v.px - DOT_HALF, v.py - DOT_HALF, blitSize, blitSize);
+      }
+    }
+
+    if (reduced) {
+      // Reduced-motion: render a single static frame. Worker still runs
+      // for that one pass — but since we only call frame() once we'll
+      // miss the worker's reply. Render without rings on the static
+      // pass.
+      frame(performance.now());
+      aborted = true;
+    } else {
+      rafId = requestAnimationFrame(frame);
+    }
+
+    return () => {
+      aborted = true;
+      cancelAnimationFrame(rafId);
+      worker.terminate();
+      canvas.removeEventListener('pointermove', onPointerMove);
+      canvas.removeEventListener('pointerleave', onPointerLeave);
+      window.removeEventListener('stage:pause', onPause);
+      window.removeEventListener('resize', resize);
+    };
+  });
+</script>
+
+<style>
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    background: var(--bg);
+    /* Claim touch gestures for the canvas; users scroll the prose
+       column on the right (or below, on portrait mobile). */
+    touch-action: none;
+  }
+</style>

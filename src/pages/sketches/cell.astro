@@ -1,0 +1,21 @@
+---
+import SketchLayout from '../../layouts/SketchLayout.astro';
+import CellSketch from '../../components/CellSketch.astro';
+import { isDraft } from '../../lib/sketches';
+
+if (import.meta.env.PROD && isDraft('cell')) return Astro.redirect('/404');
+---
+
+<SketchLayout slug="cell">
+  <CellSketch slot="stage" />
+
+  <p class="enter" style="--i: 3;">
+    每个格子里坐着一个看不见的圆，圆周上有一个点按各自的节奏缓慢转动——快慢由格子坐标的哈希定下，谁也不催谁。以这些点为种子建一张 Voronoi 图，是这片镶嵌唯一可见的运动层。
+  </p>
+  <p class="note enter" style="--i: 4;">
+    光标作为一个引力源。每个点的运动方程是<code>θ̈ = -k(d) sin(θ − θ_cursor) + γ(ω₀ − θ̇)</code>——一只圆周上的钟摆。距离远的格子里 <code>k</code> 几乎为零，回归项把角速度缓缓拉回基础速；中等距离的钟摆项让点接近光标侧时加速、远离时减速；近处钟摆能量压过基础自转，点便没法再绕完整圈，在 <code>θ_cursor</code> 周围往复震荡。
+  </p>
+  <p class="note enter" style="--i: 5;">
+    相机在格子里缓慢漂移，速度恒定，方向由极低频的一维噪声驱动，整张网格在数学上是无穷的——只有视野内的格子被赋予生命，离开视野就被遗忘，再次进入也只会从同样的哈希里复活。
+  </p>
+</SketchLayout>
