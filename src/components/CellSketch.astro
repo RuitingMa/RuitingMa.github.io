@@ -128,7 +128,7 @@
     const PATH_MAX_SPREAD        = 3;    // perpendicular cells the flare bleeds into
     const PATH_SPREAD_DECAY      = 0.60; // peak alpha ratio per cell of spread distance
     const PATH_SPREAD_STEP_MS    = 200;  // ms delay per cell of spread distance
-    const PATH_LIT_KICK          = 2.0;  // angular accel (rad/s²) per unit lit alpha — drives the cell's pendulum
+    const PATH_LIT_VEL           = 1.0;  // extra angular velocity (rad/s) per unit lit alpha — added directly to theta integration so motion locks in step with alpha
 
     // ----- Pre-rendered orbital point sprite (true exp decay) -----
     const DOT_HALF  = 11;
@@ -548,16 +548,16 @@
               const tc = Math.atan2(dy, dx);
               dd += -k * Math.sin(c.theta - tc);
             }
-            // Path-lit kick: angular accel proportional to current lit
-            // alpha, in the cell's natural rotation direction. As the
-            // flare advances, lit cells spin up; combined with the
-            // existing momentum→alpha boost in the bbox loop, a lit
-            // cell visibly rolls and stays bright via positive feedback.
-            if (curLit > 0) {
-              dd += Math.sign(c.omegaBase) * curLit * PATH_LIT_KICK;
-            }
             c.thetaDot += dd * stepDt;
-            c.theta    += c.thetaDot * stepDt;
+            // Path-lit motion: add velocity directly into the theta
+            // integration step (not into the dd accelerator), so the
+            // visible rotation rate tracks curLit exactly with no
+            // first-order integration lag — alpha and motion are
+            // locked in step. The contribution doesn't accumulate
+            // on c.thetaDot, so when lit fades the cell returns to
+            // its natural pendulum motion immediately.
+            const litVel = curLit > 0 ? Math.sign(c.omegaBase) * curLit * PATH_LIT_VEL : 0;
+            c.theta    += (c.thetaDot + litVel) * stepDt;
           }
 
           const px = cx + r * Math.cos(c.theta);
