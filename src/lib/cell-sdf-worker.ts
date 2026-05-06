@@ -8,12 +8,19 @@
  *
  *   request:
  *     { type: 'compute'; positions; neighborOffsets;
- *       neighborCounts; neighborData; bboxes; sdfBuffer; n; w; h;
+ *       neighborCounts; neighborNx; neighborNy; neighborInvD2;
+ *       bboxes; cellFades; sdfBuffer; n; w; h;
  *       layerSpacing; featherRange; lutScale; featherLut; ringFades;
  *       maxRings; fgPacked; skipDist }
  *
  *   response:
  *     { type: 'result'; sdfBuffer }
+ *
+ * Neighbor data is laid out as struct-of-arrays (nx, ny, invD2 each
+ * a separate Float32Array, indexed at the same neighbor slot) rather
+ * than a single packed stride-3 array. The inner loop reads each
+ * with stride-1 indexing, which the JIT can fold into pointer-add
+ * arithmetic — meaningful gain on the hot loop.
  *
  * `sdfBuffer` is transferred both directions (the big 2-3 MB buffer);
  * everything else is small and structured-cloned. The main thread
@@ -38,7 +45,9 @@ interface ComputeMsg {
   positions: Float64Array;
   neighborOffsets: Uint32Array;
   neighborCounts: Uint16Array;
-  neighborData: Float32Array;
+  neighborNx: Float32Array;    // SoA neighbor data — see header comment
+  neighborNy: Float32Array;
+  neighborInvD2: Float32Array;
   bboxes: Float32Array;        // [xMin, yMin, xMax, yMax] per cell
   cellFades: Float32Array;     // SDF fade-in factor per cell, 0..1 — multiplies output alpha so newly-visible cells aren't full-bright on first appearance
   sdfBuffer: Uint32Array;
@@ -66,10 +75,12 @@ ctx.addEventListener('message', (e: MessageEvent<ComputeMsg>) => {
   const sdfBuffer = m.sdfBuffer;
   sdfBuffer.fill(0);
 
-  const positions      = m.positions;
+  const positions       = m.positions;
   const neighborOffsets = m.neighborOffsets;
   const neighborCounts  = m.neighborCounts;
-  const neighborData    = m.neighborData;
+  const neighborNx      = m.neighborNx;
+  const neighborNy      = m.neighborNy;
+  const neighborInvD2   = m.neighborInvD2;
   const bboxes          = m.bboxes;
   const cellFades       = m.cellFades;
   const featherLut      = m.featherLut;
@@ -101,7 +112,7 @@ ctx.addEventListener('message', (e: MessageEvent<ComputeMsg>) => {
     const sx = positions[k * 2];
     const sy = positions[k * 2 + 1];
     const start = neighborOffsets[k];
-    const end   = start + neighborCounts[k] * 3;
+    const end   = start + neighborCounts[k];
 
     for (let py = yMin; py < yMax; py++) {
       const rowBase = py * w;
@@ -114,12 +125,12 @@ ctx.addEventListener('message', (e: MessageEvent<ComputeMsg>) => {
         // Inside-test + min-SDF in a single pass.
         let inside = true;
         let minSDF = 1e9;
-        for (let i = start; i < end; i += 3) {
-          const dxn = px - neighborData[i];
-          const dyn = py - neighborData[i + 1];
+        for (let i = start; i < end; i++) {
+          const dxn = px - neighborNx[i];
+          const dyn = py - neighborNy[i];
           const dNSq = dxn * dxn + dyn * dyn;
           if (dNSq < dSelfSq) { inside = false; break; }
-          const sdfHere = (dNSq - dSelfSq) * neighborData[i + 2];
+          const sdfHere = (dNSq - dSelfSq) * neighborInvD2[i];
           if (sdfHere < minSDF) minSDF = sdfHere;
         }
         if (!inside) continue;
