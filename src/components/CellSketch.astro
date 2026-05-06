@@ -50,6 +50,11 @@
 
     const ctx = canvas.getContext('2d')!;
     const dpr = window.devicePixelRatio || 1;
+    // SDF runs in CSS-pixel space (not physical). On retina, drawImage
+    // bilinear-upscales the SDF buffer to fill the dpr-scaled main
+    // canvas; rings look slightly soft but the worker stays well under
+    // the 16ms frame budget. A previous attempt at dpr-aware SDF
+    // (4× pixels at dpr=2) saturated the worker and stalled the rings.
     let w = 0, h = 0;
     let CELL_SIZE = 80;
 
@@ -109,7 +114,7 @@
     // ----- SDF rendering constants & precomputed tables -----
     const FEATHER     = 0.75;
     const RING_DECAY  = 0.55;
-    const PEAK        = 0.55;
+    const PEAK        = 0.30;
     const MAX_RINGS   = 5;
 
     const LUT_SIZE      = 256;
@@ -295,10 +300,14 @@
       camY += Math.sin(heading) * speed * stepDt;
 
       const halfW = w / 2, halfH = h / 2;
-      const iMin = Math.floor((camX - halfW) / CELL_SIZE) - 1;
-      const iMax = Math.floor((camX + halfW) / CELL_SIZE) + 1;
-      const jMin = Math.floor((camY - halfH) / CELL_SIZE) - 1;
-      const jMax = Math.floor((camY + halfH) / CELL_SIZE) + 1;
+      // Padding of 2 (not 1): cells at the visible edge then have all
+      // their true Voronoi neighbors present in the diagram, so the
+      // SDF's `min over neighbors` doesn't gain new terms (and shift
+      // discontinuously) as a fresh cell scrolls into view.
+      const iMin = Math.floor((camX - halfW) / CELL_SIZE) - 2;
+      const iMax = Math.floor((camX + halfW) / CELL_SIZE) + 2;
+      const jMin = Math.floor((camY - halfH) / CELL_SIZE) - 2;
+      const jMax = Math.floor((camY + halfH) / CELL_SIZE) + 2;
       pruneCells(iMin, iMax, jMin, jMax);
 
       const mwx = mouseX + camX - halfW;
