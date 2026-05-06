@@ -87,12 +87,17 @@
     // Per-cell tint as a translucent moss veil over BG. Each cell gets
     // a startAlpha sampled from a smooth 2-D noise (so adjacent cells
     // share regional means — opaque clusters and rare transparent
-    // pockets, instead of uniform scatter). The cell sits at startAlpha
-    // while it's in the padding zone; the moment its seed crosses into
-    // the on-canvas window the birth-clock starts and alpha fades
-    // linearly to 0 across TINT_LIFETIME_MS. Drifting back off-canvas
-    // (or being pruned and re-entering) resets the clock — every
-    // boundary crossing into view reads as a rebirth.
+    // pockets, instead of uniform scatter). A cell sits at startAlpha
+    // while its polygon is fully off-canvas; the moment the polygon's
+    // bbox first overlaps the canvas the birth-clock starts and alpha
+    // fades linearly to 0 across TINT_LIFETIME_MS. When the polygon
+    // drifts back off-canvas (or the cell is pruned and re-enters) the
+    // clock resets — every visual entry reads as a rebirth.
+    //
+    // The visibility test is on the polygon, not the seed's grid coord:
+    // the polygon can clip a strip on-canvas while its seed sits in the
+    // padding zone, and a grid-based test caused a visible alpha jump
+    // at that boundary.
     const MAX_TINT          = 0.55;
     const TINT_GROUP_SCALE  = 4;     // cells per noise unit (larger → bigger groups)
     const TINT_BIAS         = 0.5;   // <1 biases toward opaque (rare transparent)
@@ -262,7 +267,7 @@
       omegaAmp: number;
       omegaPhase: number;
       rFactor: number;
-      birthTime: number;   // ms — -1 until cell first enters the on-canvas window; then now
+      birthTime: number;   // ms — -1 while polygon is fully off-canvas; set to now on first overlap
       startAlpha: number;  // peak fill alpha at birth, faded over time
     };
     const cells = new Map<string, Cell>();
@@ -357,32 +362,13 @@
       const flatNeeded = 2 * cellCount;
       if (flatBuf.length < flatNeeded) flatBuf = new Float64Array(flatNeeded * 2);
 
-      type V = { cx: number; cy: number; r: number; px: number; py: number; fill: string; fillAlpha: number };
+      type V = { cx: number; cy: number; r: number; px: number; py: number; c: Cell; fill: string; fillAlpha: number };
       const visible: V[] = [];
       let n = 0;
-
-      // The on-canvas window is the visible range minus the 2-cell
-      // padding on each side (cells in the padding zone have their seed
-      // off-screen but contribute clipped polygon strips at the canvas
-      // edge). Birth-clock starts when a cell first enters this window.
-      const onCanvasIMin = iMin + 2, onCanvasIMax = iMax - 2;
-      const onCanvasJMin = jMin + 2, onCanvasJMax = jMax - 2;
 
       for (let j = jMin; j <= jMax; j++) {
         for (let i = iMin; i <= iMax; i++) {
           const c = ensureCell(i, j);
-          // Re-set birth on every padding-zone frame: a cell that drifts
-          // back off-canvas (without being pruned) gets a fresh clock the
-          // next time it crosses in. Birth fires on the first on-canvas
-          // frame after any padding-zone visit.
-          const onCanvas =
-            i >= onCanvasIMin && i <= onCanvasIMax &&
-            j >= onCanvasJMin && j <= onCanvasJMax;
-          if (onCanvas) {
-            if (c.birthTime < 0) c.birthTime = now;
-          } else {
-            c.birthTime = -1;
-          }
           const cwx = (i + 0.5) * CELL_SIZE;
           const cwy = (j + 0.5) * CELL_SIZE;
           const cx  = cwx - camX + halfW;
@@ -408,12 +394,9 @@
           const py = cy + r * Math.sin(c.theta);
           flatBuf[n * 2]     = px;
           flatBuf[n * 2 + 1] = py;
-          const fade = c.birthTime < 0
-            ? 1  // still in padding zone — display at full startAlpha
-            : Math.max(0, 1 - (now - c.birthTime) / TINT_LIFETIME_MS);
-          const fillAlpha = c.startAlpha * fade;
-          const fill = `rgba(${ACCENT[0]},${ACCENT[1]},${ACCENT[2]},${fillAlpha})`;
-          visible.push({ cx, cy, r, px, py, fill, fillAlpha });
+          // fill / fillAlpha are filled in below, after Voronoi build,
+          // when each cell's polygon-canvas overlap is known.
+          visible.push({ cx, cy, r, px, py, c, fill: '', fillAlpha: 0 });
           n++;
         }
       }
@@ -463,12 +446,18 @@
       const sdfW = sdfCanvas.width;
       const sdfH = sdfCanvas.height;
       for (let k = 0; k < n; k++) {
+        const v = visible[k];
+        const c = v.c;
         const polyRaw = voronoi.cellPolygon(k);
         if (!polyRaw) {
           bboxesBuf[k * 4]     = 0;
           bboxesBuf[k * 4 + 1] = 0;
           bboxesBuf[k * 4 + 2] = 0;
           bboxesBuf[k * 4 + 3] = 0;
+          // No polygon at all → fully off-canvas; reset birth so the
+          // next time this cell's polygon does overlap we count it as a
+          // fresh entry rather than continuing the stale clock.
+          c.birthTime = -1;
           continue;
         }
         let bbMinX = Infinity, bbMinY = Infinity, bbMaxX = -Infinity, bbMaxY = -Infinity;
@@ -478,6 +467,23 @@
           if (p[1] < bbMinY) bbMinY = p[1];
           if (p[1] > bbMaxY) bbMaxY = p[1];
         }
+        // Lifecycle test: does the polygon's bbox overlap the canvas?
+        // Grid-coord based tests (i,j vs onCanvas window) miss the case
+        // where the seed grid is in the padding zone but the polygon
+        // still clips a strip on-canvas — caused a visible alpha jump
+        // (full padding-zone alpha → faded on-canvas alpha) at the edge.
+        const polyVisible = bbMaxX > 0 && bbMinX < w && bbMaxY > 0 && bbMinY < h;
+        if (polyVisible) {
+          if (c.birthTime < 0) c.birthTime = now;
+        } else {
+          c.birthTime = -1;
+        }
+        const fade = c.birthTime < 0
+          ? 1
+          : Math.max(0, 1 - (now - c.birthTime) / TINT_LIFETIME_MS);
+        v.fillAlpha = c.startAlpha * fade;
+        v.fill = `rgba(${ACCENT[0]},${ACCENT[1]},${ACCENT[2]},${v.fillAlpha})`;
+
         bboxesBuf[k * 4]     = Math.max(0, Math.floor(bbMinX));
         bboxesBuf[k * 4 + 1] = Math.max(0, Math.floor(bbMinY));
         bboxesBuf[k * 4 + 2] = Math.min(sdfW, Math.ceil(bbMaxX));
