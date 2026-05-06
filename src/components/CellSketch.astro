@@ -130,6 +130,28 @@
     const PATH_SPREAD_STEP_MS    = 200;  // ms delay per cell of spread distance
     const PATH_LIT_VEL           = 1.0;  // extra angular velocity (rad/s) per unit lit alpha — added directly to theta integration so motion locks in step with alpha
 
+    // ----- Click-triggered ring flares -----
+    // Pointer-down spawns a concentric wavefront — a true ripple — from
+    // the clicked grid cell. Visual lifecycle is shared with self-spawned
+    // line flares (per-cell lit-alpha composited via curLit), but the
+    // envelope is per-flare so rings can have a narrow attack/release:
+    // the wavefront passes through each cell as a brief flash rather
+    // than the line flare's slower swell.
+    //
+    // The narrow envelope is what makes the ring read as an expanding
+    // band rather than a uniformly-glowing disc. By the time the wavefront
+    // reaches cell N, cell N-2 is already fading; the bright band is only
+    // RING_RISE_MS+RING_FADE_MS thick in time, much shorter than the full
+    // travel RING_RADIUS·RING_STEP_MS — so most of the disc is dark at
+    // any one frame, with a thin lit ring sweeping outward.
+    const RING_RADIUS      = 10;    // grid cells of euclidean radius
+    const RING_STEP_MS     = 240;   // ms wavefront delay per cell of radial distance — sets ring expansion speed
+    const RING_PEAK_ALPHA  = 0.90;  // peak alpha at the wavefront crest
+    const RING_FALLOFF     = 0.85;  // peak alpha ratio per cell of radial distance — outer cells fade visibly so the ripple weakens with distance
+    const RING_RISE_MS     = 170;   // attack — slow swell as the wavefront arrives at each cell
+    const RING_FADE_MS     = 450;   // release — long enough that the lit-velocity contribution lingers and the cell's pendulum visibly carries through, not just a flicker
+    const RING_FADE_GAMMA  = 1.4;   // > 1 so the fade is front-loaded (drops fast right after peak); produces a tighter visible band even as the absolute timings grow
+
     // ----- Pre-rendered orbital point sprite (true exp decay) -----
     const DOT_HALF  = 11;
     const DOT_DECAY =  1.9;
@@ -166,6 +188,15 @@
     const RING_DECAY  = 0.55;
     const PEAK        = 0.30;
     const MAX_RINGS   = 5;
+    // SDF rings are gated by a per-cell fade-in anchored to birthTime
+    // (set when the cell's polygon first overlaps the canvas). Without
+    // this, rings appear at full alpha the moment a cell scrolls into
+    // view — the padding=2 buffer keeps SDF math correct for visible
+    // cells, but it can't smooth the visual "first appearance" itself.
+    // 1500 ms is short enough that the cell isn't visibly half-empty
+    // for long, but long enough to hide the pop. Per-cell fade values
+    // are packed into cellFades and sent to the worker each frame.
+    const SDF_FADE_IN_MS = 1500;
 
     const LUT_SIZE      = 256;
     const FEATHER_RANGE = 5 * FEATHER;
@@ -193,13 +224,21 @@
     const sdfBufferPool: Uint32Array[] = [];
     let sdfWorkerInflight = 0;
     let sdfHasFirstResult = false;
-    let sdfSeqNo = 0;
     const worker = new SdfWorkerCtor();
 
     worker.addEventListener('message', (e: MessageEvent) => {
-      const msg = e.data as { type: 'result'; seqNo: number; sdfBuffer: Uint32Array };
+      const msg = e.data as { type: 'result'; sdfBuffer: Uint32Array };
       if (msg.type !== 'result') return;
       sdfWorkerInflight--;
+
+      // After a resize, replies for the previous canvas size may still
+      // be in flight. The buffer's length is fixed at dispatch, so a
+      // mismatch with the current sdfCanvas dimensions flags a stale
+      // reply — drop it on the floor (don't push back to the pool; the
+      // pool now holds new-size buffers). Without this guard, the
+      // ImageData constructor below throws: it requires
+      // data.length === width * height * 4.
+      if (msg.sdfBuffer.length !== sdfCanvas.width * sdfCanvas.height) return;
 
       // Wrap the worker-filled u32 buffer as an ImageData and blit onto
       // sdfCanvas. ImageData expects a Uint8ClampedArray view of the
@@ -219,6 +258,7 @@
     let neighborOffsets = new Uint32Array(0);
     let neighborCounts  = new Uint16Array(0);
     let bboxesBuf       = new Float32Array(0);   // [xMin, yMin, xMax, yMax] per cell
+    let cellFades       = new Float32Array(0);   // SDF fade-in factor per cell, 0..1 — see SDF_FADE_IN_MS
 
     function resize() {
       const rect = canvas!.getBoundingClientRect();
@@ -329,10 +369,18 @@
     }
 
     // ----- Path-light flares -----
+    // Both line flares (self-spawned) and ring flares (click-triggered)
+    // share this shape. They differ only in geometry (which cells the
+    // flare touches and when) and envelope timing — the per-flare
+    // riseMs/fadeMs/fadeGamma fields let rings have a much narrower
+    // pulse than lines without forking the render path.
     type PathCell = { litAt: number; peak: number };
     type PathAnim = {
       cells: Map<string, PathCell>;
       endTime: number;
+      riseMs: number;
+      fadeMs: number;
+      fadeGamma: number;
     };
     const activePaths: PathAnim[] = [];
 
@@ -421,6 +469,35 @@
           maxSpreadDist * PATH_SPREAD_STEP_MS +
           PATH_RISE_MS +
           PATH_FADE_MS,
+        riseMs:    PATH_RISE_MS,
+        fadeMs:    PATH_FADE_MS,
+        fadeGamma: PATH_FADE_GAMMA,
+      });
+    }
+
+    function spawnRingFlare(now: number, originI: number, originJ: number) {
+      const cells = new Map<string, PathCell>();
+      // Pure concentric wavefront. Every cell at radial distance d
+      // ignites at d·RING_STEP_MS. The narrow ring envelope means the
+      // band visible at any one frame is one or two radial cells thick —
+      // a true expanding ring, not a glowing disc. Peak alpha decays
+      // gently with radius (RING_FALLOFF close to 1) so the wavefront
+      // remains readable as it reaches the outer cells.
+      for (let dj = -RING_RADIUS; dj <= RING_RADIUS; dj++) {
+        for (let di = -RING_RADIUS; di <= RING_RADIUS; di++) {
+          const radial = Math.sqrt(di * di + dj * dj);
+          if (radial > RING_RADIUS) continue;
+          const peak  = RING_PEAK_ALPHA * Math.pow(RING_FALLOFF, radial);
+          const litAt = now + radial * RING_STEP_MS;
+          cells.set(cellKey(originI + di, originJ + dj), { litAt, peak });
+        }
+      }
+      activePaths.push({
+        cells,
+        endTime:   now + RING_RADIUS * RING_STEP_MS + RING_RISE_MS + RING_FADE_MS,
+        riseMs:    RING_RISE_MS,
+        fadeMs:    RING_FADE_MS,
+        fadeGamma: RING_FADE_GAMMA,
       });
     }
 
@@ -432,8 +509,24 @@
       mouseY = e.clientY - rect.top;
     };
     const onPointerLeave = () => { mouseX = -9999; mouseY = -9999; };
+    const onPointerDown = (e: PointerEvent) => {
+      // Spawn a ring flare centered on the clicked grid cell. We map
+      // pointer position → world space (camera-relative) → grid coord;
+      // the ring then propagates outward from there even if the camera
+      // drifts during the flare's lifetime. On touch, pointermove fires
+      // alongside pointerdown, so the cursor pull and the ring spawn
+      // arrive together — on a touch device that's the only way to
+      // express "be here" anyway.
+      const rect = canvas!.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      const wx = px + camX - w / 2;
+      const wy = py + camY - h / 2;
+      spawnRingFlare(performance.now(), Math.floor(wx / CELL_SIZE), Math.floor(wy / CELL_SIZE));
+    };
     canvas.addEventListener('pointermove', onPointerMove);
     canvas.addEventListener('pointerleave', onPointerLeave);
+    canvas.addEventListener('pointerdown', onPointerDown);
 
     let paused = false;
     const onPause = (e: Event) => { paused = !!(e as CustomEvent).detail?.paused; };
@@ -501,41 +594,42 @@
         for (let i = iMin; i <= iMax; i++) {
           const c = ensureCell(i, j);
 
-          // Path-lit alpha for this cell at `now`. Computed here (before
-          // physics integration) so it can both drive the pendulum kick
-          // and be stored on V for the render pass — single lookup
-          // instead of two. Envelope is attack + release:
-          //   age ∈ [0, RISE_MS): smoothstep ramp 0 → peak (the "inertia"
-          //     ramp the orbital pendulum already exhibits — matches it).
-          //   age ∈ [RISE_MS, RISE_MS+FADE_MS): pow(1 − t, FADE_GAMMA)
-          //     with gamma < 1 — sustains then snaps.
-          let curLit = 0;
-          if (activePaths.length > 0) {
-            const key = cellKey(i, j);
-            const totalMs = PATH_RISE_MS + PATH_FADE_MS;
-            for (let pi = 0; pi < activePaths.length; pi++) {
-              const entry = activePaths[pi].cells.get(key);
-              if (!entry) continue;
-              const age = now - entry.litAt;
-              if (age < 0 || age >= totalMs) continue;
-              let envelope: number;
-              if (age < PATH_RISE_MS) {
-                const t = age / PATH_RISE_MS;
-                envelope = t * t * (3 - 2 * t); // smoothstep
-              } else {
-                const fadeT = (age - PATH_RISE_MS) / PATH_FADE_MS;
-                envelope = Math.pow(1 - fadeT, PATH_FADE_GAMMA);
-              }
-              const a = entry.peak * envelope;
-              if (a > curLit) curLit = a;
-            }
-          }
-
           const cwx = (i + 0.5) * CELL_SIZE;
           const cwy = (j + 0.5) * CELL_SIZE;
           const cx  = cwx - camX + halfW;
           const cy  = cwy - camY + halfH;
           const r   = (CELL_SIZE / 2) * c.rFactor;
+
+          // Per-cell lit alpha: max envelope across all active flares.
+          // Each flare carries its own riseMs/fadeMs/fadeGamma so line
+          // and ring flares can have very different pulse shapes (line
+          // = slow swell, ring = brief flash) without forking the
+          // render. Drives the lit-alpha render and the PATH_LIT_VEL
+          // self-rotation kick. Envelope is attack + release:
+          //   age ∈ [0, riseMs): smoothstep ramp 0 → peak.
+          //   age ∈ [riseMs, riseMs+fadeMs): pow(1 − t, fadeGamma).
+          let curLit = 0;
+          if (activePaths.length > 0) {
+            const key = cellKey(i, j);
+            for (let pi = 0; pi < activePaths.length; pi++) {
+              const path = activePaths[pi];
+              const entry = path.cells.get(key);
+              if (!entry) continue;
+              const age = now - entry.litAt;
+              const totalMs = path.riseMs + path.fadeMs;
+              if (age < 0 || age >= totalMs) continue;
+              let envelope: number;
+              if (age < path.riseMs) {
+                const t = age / path.riseMs;
+                envelope = t * t * (3 - 2 * t); // smoothstep
+              } else {
+                const fadeT = (age - path.riseMs) / path.fadeMs;
+                envelope = Math.pow(1 - fadeT, path.fadeGamma);
+              }
+              const a = entry.peak * envelope;
+              if (a > curLit) curLit = a;
+            }
+          }
 
           if (stepDt > 0) {
             const omegaTarget = c.omegaBase * (1 + c.omegaAmp * Math.cos(c.theta + c.omegaPhase));
@@ -579,6 +673,20 @@
       // bboxes come from voronoi.cellPolygon(k) for tightness; conservative
       // bboxes derived from neighbor distances would inflate the worker's
       // pixel count by ~4× and dwarf any savings from skipping cellPolygon.
+      //
+      // We pull the adjacency list from delaunay.neighbors(k), NOT
+      // voronoi.neighbors(k). The Voronoi version filters out neighbors
+      // whose shared edge falls outside the clip box [0,0,w,h] — for
+      // cells along the screen edge this drops up to half the real
+      // neighbors. The SDF formula `min over neighbors` and the
+      // inside-test then operate on a truncated set, so the rendered
+      // inner ring reflects a fictitious polygon (only screen-side
+      // edges) and shape-shifts when the camera scrolls a clipped edge
+      // back into view. delaunay.neighbors is unaffected by the clip:
+      // it returns full Delaunay-triangulation adjacency, which equals
+      // the unclipped Voronoi neighbor set. Padding=2 around the
+      // visible grid keeps that adjacency complete on the data side;
+      // this switch makes us actually use it.
       if (neighborOffsets.length < n) {
         neighborOffsets = new Uint32Array(n * 2);
         neighborCounts  = new Uint16Array(n * 2);
@@ -586,13 +694,16 @@
       if (bboxesBuf.length < n * 4) {
         bboxesBuf = new Float32Array(n * 8);
       }
+      if (cellFades.length < n) {
+        cellFades = new Float32Array(n * 2);
+      }
       let off = 0;
       for (let k = 0; k < n; k++) {
         neighborOffsets[k] = off;
         let count = 0;
         const sx = used[k * 2];
         const sy = used[k * 2 + 1];
-        for (const j of voronoi.neighbors(k)) {
+        for (const j of delaunay.neighbors(k)) {
           if (j < 0 || j >= n) continue;
           if (off + 3 > neighborData.length) {
             const grown = new Float32Array(Math.max(neighborData.length * 2, off + 3, 1024));
@@ -628,6 +739,7 @@
           // next time this cell's polygon does overlap we count it as a
           // fresh entry rather than continuing the stale clock.
           c.birthTime = -1;
+          cellFades[k] = 0;
           continue;
         }
         let bbMinX = Infinity, bbMinY = Infinity, bbMaxX = -Infinity, bbMaxY = -Infinity;
@@ -648,6 +760,12 @@
         } else {
           c.birthTime = -1;
         }
+        // SDF fade-in tracks birthTime: 0 while the polygon is off-canvas,
+        // ramps to 1 over SDF_FADE_IN_MS after the polygon first appears.
+        // Sent to the worker per cell — see SDF_FADE_IN_MS for rationale.
+        cellFades[k] = c.birthTime < 0
+          ? 0
+          : Math.min(1, (now - c.birthTime) / SDF_FADE_IN_MS);
         const fade = c.birthTime < 0
           ? 1
           : Math.max(0, 1 - (now - c.birthTime) / TINT_LIFETIME_MS);
@@ -676,18 +794,17 @@
       if (sdfBufferPool.length > 0 && sdfWorkerInflight < 2) {
         const sdfBuffer = sdfBufferPool.pop()!;
         if (sdfBuffer.length === sdfW * sdfH) {
-          sdfSeqNo++;
           // Send subarrays of exact length so structured clone copies
           // only the live portion of each persistent buffer rather than
           // its growth-headroom remainder.
           worker.postMessage({
             type: 'compute',
-            seqNo: sdfSeqNo,
             positions: used,                                          // length n*2
             neighborOffsets: neighborOffsets.subarray(0, n),
             neighborCounts:  neighborCounts.subarray(0, n),
             neighborData:    neighborData.subarray(0, off),
             bboxes:          bboxesBuf.subarray(0, n * 4),
+            cellFades:       cellFades.subarray(0, n),
             sdfBuffer,
             n, w: sdfW, h: sdfH,
             layerSpacing,
@@ -791,6 +908,7 @@
       worker.terminate();
       canvas.removeEventListener('pointermove', onPointerMove);
       canvas.removeEventListener('pointerleave', onPointerLeave);
+      canvas.removeEventListener('pointerdown', onPointerDown);
       window.removeEventListener('stage:pause', onPause);
       window.removeEventListener('resize', resize);
     };

@@ -7,19 +7,23 @@
  * Protocol (single message type each direction):
  *
  *   request:
- *     { type: 'compute'; seqNo; positions; neighborOffsets;
+ *     { type: 'compute'; positions; neighborOffsets;
  *       neighborCounts; neighborData; bboxes; sdfBuffer; n; w; h;
  *       layerSpacing; featherRange; lutScale; featherLut; ringFades;
  *       maxRings; fgPacked; skipDist }
  *
  *   response:
- *     { type: 'result'; seqNo; sdfBuffer }
+ *     { type: 'result'; sdfBuffer }
  *
  * `sdfBuffer` is transferred both directions (the big 2-3 MB buffer);
  * everything else is small and structured-cloned. The main thread
  * keeps a small pool of two sdfBuffers and ping-pongs them through
  * the worker, so the worker is always one frame ahead of the
  * displayed image — pipeline that lets main and worker overlap.
+ *
+ * Stale replies (after a main-side resize) are detected by buffer
+ * length on the main thread, not by sequence number — see the
+ * message handler in CellSketch.astro.
  *
  * Per-cell bboxes are computed on the main side via
  * `voronoi.cellPolygon(k)` (which already runs there for the
@@ -31,12 +35,12 @@
 
 interface ComputeMsg {
   type: 'compute';
-  seqNo: number;
   positions: Float64Array;
   neighborOffsets: Uint32Array;
   neighborCounts: Uint16Array;
   neighborData: Float32Array;
   bboxes: Float32Array;        // [xMin, yMin, xMax, yMax] per cell
+  cellFades: Float32Array;     // SDF fade-in factor per cell, 0..1 — multiplies output alpha so newly-visible cells aren't full-bright on first appearance
   sdfBuffer: Uint32Array;
   n: number;
   w: number;
@@ -51,7 +55,7 @@ interface ComputeMsg {
   skipDist: number;
 }
 
-type ResultMsg = { type: 'result'; seqNo: number; sdfBuffer: Uint32Array };
+type ResultMsg = { type: 'result'; sdfBuffer: Uint32Array };
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
@@ -67,6 +71,7 @@ ctx.addEventListener('message', (e: MessageEvent<ComputeMsg>) => {
   const neighborCounts  = m.neighborCounts;
   const neighborData    = m.neighborData;
   const bboxes          = m.bboxes;
+  const cellFades       = m.cellFades;
   const featherLut      = m.featherLut;
   const ringFades       = m.ringFades;
   const n               = m.n;
@@ -84,6 +89,14 @@ ctx.addEventListener('message', (e: MessageEvent<ComputeMsg>) => {
     const xMax = bboxes[k * 4 + 2] | 0;
     const yMax = bboxes[k * 4 + 3] | 0;
     if (xMin >= xMax || yMin >= yMax) continue;
+
+    // Cell-level fade-in. 0 → cell hasn't entered the canvas yet (or
+    // just did, sub-frame); skip the entire inner loop. Above 0, all
+    // ring alphas this cell writes get multiplied by cellFade — so the
+    // SDF rings ramp up from 0 to full over SDF_FADE_IN_MS rather than
+    // popping in at full alpha when the polygon first becomes visible.
+    const cellFade = cellFades[k];
+    if (cellFade <= 0) continue;
 
     const sx = positions[k * 2];
     const sy = positions[k * 2 + 1];
@@ -123,12 +136,13 @@ ctx.addEventListener('message', (e: MessageEvent<ComputeMsg>) => {
         const alpha = ringFades[closest] * featherLut[lutIdx];
         if (alpha < 0.01) continue;
 
-        const a8 = (alpha * 255) | 0;
+        const a8 = (alpha * cellFade * 255) | 0;
+        if (a8 === 0) continue;
         sdfBuffer[rowBase + px] = fgPacked | (a8 << 24);
       }
     }
   }
 
-  const res: ResultMsg = { type: 'result', seqNo: m.seqNo, sdfBuffer };
+  const res: ResultMsg = { type: 'result', sdfBuffer };
   ctx.postMessage(res, [sdfBuffer.buffer]);
 });
