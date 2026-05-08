@@ -91,6 +91,14 @@ const single = sources.length === 1;
         let active = a;
         let standby = b;
 
+        // The `autoplay` HTML attribute fires reliably on first load
+        // but not on SPA-rendered video — Astro's ClientRouter swaps
+        // DOM after the parser's autoplay heuristic has run, leaving
+        // the new <video> paused on a blank frame. Kick it off
+        // explicitly. Catch is for autoplay-policy rejections (rare
+        // here since the video is muted, but defensive).
+        a.play().catch(() => {});
+
         function swap() {
           standby.currentTime = 0;
           standby.play();

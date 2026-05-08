@@ -1,5 +1,6 @@
 ---
 import '../styles/tokens.css';
+import 'lenis/dist/lenis.css';
 import { ClientRouter } from 'astro:transitions';
 
 interface Props {
@@ -83,6 +84,25 @@ const ogImage = image ? new URL(image, Astro.site).toString() : undefined;
     </div>
 
     <script>
+      // --- Global smooth scroll via Lenis ---
+      // One persistent instance lives on window. Lenis animates window
+      // scrollY via rAF — sticky/fixed positioning still works natively
+      // because the actual scroll position updates, just smoothly. The
+      // ClientRouter swaps DOM but doesn't replace the scroll container,
+      // so we don't tear down/recreate on navigation; the rAF loop just
+      // keeps running.
+      import Lenis from 'lenis';
+      const lw = window as unknown as { __lenisInstalled?: boolean };
+      if (!lw.__lenisInstalled) {
+        lw.__lenisInstalled = true;
+        const lenis = new Lenis({ lerp: 0.1 });
+        const raf = (time: number) => {
+          lenis.raf(time);
+          requestAnimationFrame(raf);
+        };
+        requestAnimationFrame(raf);
+      }
+
       // --- Space key → toggle stage pause ---
       // Canvas components listen for `stage:pause` and freeze their rAF loop.
       //

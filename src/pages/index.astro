@@ -113,11 +113,101 @@ const BANNER_H = 120;
     }, { once: true });
   }
 
+  // Bend the banner's pre-pin travel from linear (sticky's default) to
+  // ease-in-out, so it visibly slows as it lifts off natural and again
+  // as it settles into pin. Lenis already smooths the scroll itself;
+  // this curve is applied on top so the *banner's* progress through its
+  // travel is non-linear regardless of input speed.
+  //
+  // Math: at scrollY S in [0, pinDist], smoothstep gives the eased
+  // progress p; the banner's eased viewport y is naturalY - p*pinDist,
+  // and sticky's actual is naturalY - S, so the delta we apply via
+  // translate is pinDist * (t - p) where t = S/pinDist. Outside the
+  // pre-pin range the delta is 0 (sticky alone is correct).
+  let bannerEaseCleanup: (() => void) | null = null;
+
+  function bannerEase() {
+    bannerEaseCleanup?.();
+    bannerEaseCleanup = null;
+
+    const banner = document.querySelector<HTMLElement>('.banner-wrap');
+    if (!banner) return;
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+    const init = () => {
+      // Same .enter-class trick as before: animation-fill-mode: both
+      // would lock translateY(0) over our inline transform forever.
+      banner.classList.remove('enter');
+
+      let pinDist = 0;
+      let raf = 0;
+      let stopped = false;
+
+      const measure = () => {
+        const pinY = parseFloat(getComputedStyle(banner).top) || 0;
+        let natY = 0;
+        let el: HTMLElement | null = banner;
+        while (el) {
+          natY += el.offsetTop;
+          el = el.offsetParent as HTMLElement | null;
+        }
+        pinDist = Math.max(0, natY - pinY);
+      };
+
+      const apply = () => {
+        if (stopped) return;
+        const s = window.scrollY;
+        if (pinDist <= 0 || s <= 0 || s >= pinDist) {
+          banner.style.transform = '';
+        } else {
+          const t = s / pinDist;
+          const p = t * t * (3 - 2 * t);
+          banner.style.transform = `translate3d(0, ${pinDist * (t - p)}px, 0)`;
+        }
+        raf = 0;
+      };
+
+      const onScroll = () => {
+        if (!raf && !stopped) raf = requestAnimationFrame(apply);
+      };
+
+      measure();
+      apply();
+      window.addEventListener('scroll', onScroll, { passive: true });
+
+      // Layout shifts (font swap, header height change, breakpoint) move
+      // the natural and pin positions; recompute and re-apply.
+      const ro = new ResizeObserver(() => {
+        measure();
+        apply();
+      });
+      ro.observe(banner);
+      ro.observe(document.documentElement);
+
+      bannerEaseCleanup = () => {
+        stopped = true;
+        if (raf) cancelAnimationFrame(raf);
+        window.removeEventListener('scroll', onScroll);
+        ro.disconnect();
+        banner.style.transform = '';
+      };
+    };
+
+    const anim = banner.getAnimations?.()[0];
+    if (anim && anim.playState !== 'finished') {
+      anim.finished.then(init).catch(() => {});
+    } else {
+      init();
+    }
+  }
+
   attachHeat();
   trackHeaderHeight();
+  bannerEase();
   document.addEventListener('astro:page-load', () => {
     attachHeat();
     trackHeaderHeight();
+    bannerEase();
   });
 </script>
 
