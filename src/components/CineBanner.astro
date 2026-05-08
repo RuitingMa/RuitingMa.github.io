@@ -1,0 +1,174 @@
+---
+interface Props {
+  sources: string[];
+  height?: number;
+  blur?: number;
+  /** Crossfade duration in ms. */
+  fade?: number;
+  /** Interval between source switches in ms (multi-source only). */
+  interval?: number;
+  class?: string;
+}
+
+const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov', '.ogg']);
+function isVideo(src: string) {
+  const dot = src.lastIndexOf('.');
+  return dot !== -1 && VIDEO_EXTS.has(src.slice(dot).toLowerCase());
+}
+
+const {
+  sources,
+  height = 120,
+  blur = 6,
+  fade = 5000,
+  interval = 8000,
+  class: className,
+} = Astro.props;
+
+const single = sources.length === 1;
+---
+
+<div
+  class:list={['cine-banner', className]}
+  style={`--cb-h: ${height}px; --cb-blur: ${blur}px; --cb-fade: ${fade}ms;`}
+  data-cb-fade={fade}
+  data-cb-interval={interval}
+>
+  <div class="cb-track">
+    {single ? (
+      <>
+        {/* Two elements for seamless loop crossfade */}
+        {isVideo(sources[0]) ? (
+          <>
+            <video class="cb-media cb-a" src={sources[0]} autoplay muted playsinline />
+            <video class="cb-media cb-b" src={sources[0]} muted playsinline style="opacity:0" />
+          </>
+        ) : (
+          <img class="cb-media" src={sources[0]} alt="" />
+        )}
+      </>
+    ) : (
+      sources.map((src, i) =>
+        isVideo(src) ? (
+          <video
+            class="cb-media"
+            data-index={i}
+            src={src}
+            autoplay
+            loop
+            muted
+            playsinline
+            style={i === 0 ? undefined : 'opacity:0'}
+          />
+        ) : (
+          <img
+            class="cb-media"
+            data-index={i}
+            src={src}
+            alt=""
+            style={i === 0 ? undefined : 'opacity:0'}
+          />
+        )
+      )
+    )}
+  </div>
+</div>
+
+<script>
+  function initBanners() {
+    for (const banner of document.querySelectorAll<HTMLElement>('.cine-banner')) {
+      if ((banner as any).__cbInit) continue;
+      (banner as any).__cbInit = true;
+
+      const fadeMs = Number(banner.dataset.cbFade) || 5000;
+      const fadeSec = fadeMs / 1000;
+      const trans = `opacity ${fadeMs}ms ease`;
+
+      const a = banner.querySelector<HTMLVideoElement>('.cb-a');
+      const b = banner.querySelector<HTMLVideoElement>('.cb-b');
+
+      if (a && b) {
+        let active = a;
+        let standby = b;
+
+        function swap() {
+          standby.currentTime = 0;
+          standby.play();
+          standby.style.transition = trans;
+          active.style.transition = trans;
+          standby.style.opacity = '1';
+          active.style.opacity = '0';
+          const tmp = active;
+          active = standby;
+          standby = tmp;
+        }
+
+        a.addEventListener('timeupdate', () => {
+          if (active !== a) return;
+          if (a.duration && a.currentTime >= a.duration - fadeSec) swap();
+        });
+        b.addEventListener('timeupdate', () => {
+          if (active !== b) return;
+          if (b.duration && b.currentTime >= b.duration - fadeSec) swap();
+        });
+        continue;
+      }
+
+      // Multi-source mode
+      const items = banner.querySelectorAll<HTMLElement>('.cb-media');
+      if (items.length <= 1) continue;
+
+      const interval = Number(banner.dataset.cbInterval) || 8000;
+      let cur = 0;
+
+      const timer = setInterval(() => {
+        const prev = items[cur];
+        cur = (cur + 1) % items.length;
+        const next = items[cur];
+        next.style.transition = trans;
+        prev.style.transition = trans;
+        next.style.opacity = '1';
+        prev.style.opacity = '0';
+      }, interval);
+
+      banner.addEventListener('astro:unmount', () => clearInterval(timer), { once: true });
+    }
+  }
+  initBanners();
+  document.addEventListener('astro:page-load', initBanners);
+</script>
+
+<style>
+  .cine-banner {
+    position: relative;
+    width: 100%;
+    height: var(--cb-h);
+    overflow: hidden;
+  }
+
+  .cb-track {
+    position: relative;
+    width: 100%;
+    height: 100%;
+  }
+
+  .cb-media {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    filter: blur(var(--cb-blur));
+    transform: scale(1.08);
+  }
+
+  /* Four-edge vignette via inset box-shadow. */
+  .cine-banner::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    box-shadow: inset 0 0 30px 8px var(--bg, #0f0f10);
+  }
+</style>
