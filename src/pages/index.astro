@@ -170,16 +170,27 @@ const BANNER_H = 120;
         pinDist = Math.max(0, natY - pinY);
       };
 
+      // Cached once at init: the title participates in the same scroll
+      // curve via a CSS variable that drives a mask-image gradient (see
+      // h1's CSS rule). Setting it on the element directly keeps the
+      // var local — no global pollution.
+      const titleEl = document.querySelector<HTMLElement>('article > header > h1');
+
       const apply = () => {
         if (stopped) return;
         const s = window.scrollY;
-        if (pinDist <= 0 || s <= 0 || s >= pinDist) {
+        let progress = 0;
+        if (pinDist <= 0 || s <= 0) {
           banner.style.transform = '';
+        } else if (s >= pinDist) {
+          banner.style.transform = '';
+          progress = 1;
         } else {
           const t = s / pinDist;
-          const p = t * t * (3 - 2 * t);
-          banner.style.transform = `translate3d(0, ${pinDist * (t - p)}px, 0)`;
+          progress = t * t * (3 - 2 * t);
+          banner.style.transform = `translate3d(0, ${pinDist * (t - progress)}px, 0)`;
         }
+        if (titleEl) titleEl.style.setProperty('--p', String(progress));
         raf = 0;
       };
 
@@ -215,12 +226,18 @@ const BANNER_H = 120;
       };
     };
 
-    const anim = banner.getAnimations?.()[0];
-    if (anim && anim.playState !== 'finished') {
-      anim.finished.then(init).catch(() => {});
-    } else {
-      init();
-    }
+    // Run init immediately rather than waiting on the .enter
+    // animation's `finished` Promise. The wait was originally there to
+    // sidestep animation-fill-mode locking transform after completion,
+    // but init's first line removes the .enter class which cancels the
+    // animation regardless of state — same effect, no race. The wait
+    // could leave the banner invisible if the animation never reaches
+    // its end frame (paused tab during SPA nav back, view transition
+    // suspending the timeline, etc.), since opacity: 0 from .enter's
+    // initial keyframe is retained while finished hasn't resolved.
+    // Trade-off: banner skips the fade-in entry; h1 / sub / list still
+    // get theirs from .enter on those elements.
+    init();
   }
 
   attachHeat();
@@ -273,13 +290,13 @@ const BANNER_H = 120;
     z-index: 20;
     isolation: isolate;
     margin-bottom: 2.5em;
-    /* Break out of the column's 3rem horizontal padding so the banner
-       reaches the column's outer edges. When pinned, it lifts up
-       behind the header as a background plate, intentionally wider
-       than the text it backs. The mask/fade pseudo-elements inherit
-       this extended width via left/right: 0. */
-    margin-left: -3rem;
-    margin-right: -3rem;
+    /* Break out partway past the column's 3rem horizontal padding —
+       wider than the text it backs (so it reads as a background plate
+       when it pins behind the header) but with breathing room before
+       reaching the column's outer edge. The mask/fade pseudo-elements
+       inherit this width via left/right: 0. */
+    margin-left: -2rem;
+    margin-right: -2rem;
   }
   /* Solid mask above the banner: covers any content that scrolls up
      into the strip behind the header. Height 100vh so even at extreme
@@ -324,10 +341,11 @@ const BANNER_H = 120;
     article {
       --header-offset: calc(var(--stage-h-mobile, 30svh) + 2rem);
     }
-    /* Mobile column padding is 1.5rem, so match the banner break-out. */
+    /* Mobile column padding is 1.5rem; scale the break-out down
+       proportionally to keep the same partial-extension feel. */
     .banner-wrap {
-      margin-left: -1.5rem;
-      margin-right: -1.5rem;
+      margin-left: -1rem;
+      margin-right: -1rem;
     }
     .banner-wrap::before {
       height: max(0px, calc(2rem + (var(--header-h, 0px) - var(--banner-h, 0px)) / 2));
@@ -346,6 +364,26 @@ const BANNER_H = 120;
     font-size: 2.6rem;
     margin: 0;
     line-height: 1.2;
+    /* Title sinks into the banner as it pins. JS writes --p (0 =
+       banner at natural / scrollY=0, 1 = banner fully pinned) on
+       every scroll frame; two stops in the mask gradient interpolate
+       toward more aggressive fade values. At p=1 the top 30% stays
+       solid, 30%–90% gradient-fades, and 90%–100% is fully
+       transparent. At p=0 both stops park well past 100% so the
+       visible 0–100% mask area is solid black throughout. */
+    --p: 0;
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      #000,
+      #000 calc(30% + 70% * (1 - var(--p))),
+      transparent calc(90% + 110% * (1 - var(--p)))
+    );
+    mask-image: linear-gradient(
+      to bottom,
+      #000,
+      #000 calc(30% + 70% * (1 - var(--p))),
+      transparent calc(90% + 110% * (1 - var(--p)))
+    );
   }
   .sub {
     font-family: var(--font-mono);
