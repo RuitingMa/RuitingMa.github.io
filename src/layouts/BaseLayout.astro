@@ -59,7 +59,19 @@ const ogImage = image ? new URL(image, Astro.site).toString() : undefined;
         <slot name="stage" />
         <span class="stage-pause" aria-hidden="true">paused</span>
       </aside>
-      <section class="column" transition:name="column">
+      {/* No transition:name on column. With it, the browser morphs
+          the column's bbox between OLD and NEW pages — and when the
+          user is scrolled with sticky elements pinned (banner, header)
+          the OLD bbox is much taller than NEW (sketch pages have less
+          content), so during the morph every descendant is repositioned
+          by relative offset (e.g. a banner pinned at scrollY=1000 sits
+          at ~21% of the OLD column; scaled into a 1500px NEW column it
+          lands at viewport y=315 — dropping ~250px during nav). h1 and
+          list items get the same treatment. Without the name, the
+          column just fades as a generic page-level transition; nothing
+          repositions. Stage keeps its name because the canvas needs to
+          persist its render across navigation. */}
+      <section class="column">
         <slot />
       </section>
     </main>
