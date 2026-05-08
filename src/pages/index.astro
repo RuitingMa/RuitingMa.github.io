@@ -31,6 +31,10 @@ const entries = [...sketches, ...essays].sort((a, b) => {
   if (a.date !== b.date) return a.date < b.date ? 1 : -1;
   return a.href < b.href ? -1 : 1;
 });
+
+// Single source of truth: the same px feeds both the CineBanner prop
+// and the CSS var that the banner-wrap's sticky `top` calc consumes.
+const BANNER_H = 120;
 ---
 
 <BaseLayout title="眠海">
@@ -42,10 +46,10 @@ const entries = [...sketches, ...essays].sort((a, b) => {
       <p class="sub enter" style="--i: 1;">SUNKEN KEEP / 保持沉没</p>
     </header>
 
-    <div class="banner-wrap enter" style="--i: 2;">
+    <div class="banner-wrap enter" style={`--i: 2; --banner-h: ${BANNER_H}px;`}>
       <CineBanner
         sources={["/banner/lobby/lamp.mp4"]}
-        height={120}
+        height={BANNER_H}
         blur={6}
       />
     </div>
@@ -78,17 +82,135 @@ const entries = [...sketches, ...essays].sort((a, b) => {
       });
     }
   }
+
+  // The banner pins center-aligned to the header. The pin position is
+  // pure CSS: `top: calc(... + var(--header-h)/2 - var(--banner-h)/2)`.
+  // JS only writes --header-h via ResizeObserver, which fires on every
+  // layout shift that can change header height: font swap, breakpoint
+  // crossing, viewport resize, even mobile chrome show/hide. No scroll
+  // listener, no cached offsets — that's what made the previous version
+  // brittle.
+  function trackHeaderHeight() {
+    const header = document.querySelector<HTMLElement>('article > header');
+    if (!header) return;
+    const tracked = header as HTMLElement & { __hRO?: ResizeObserver };
+    if (tracked.__hRO) return;
+
+    const root = document.documentElement;
+    const ro = new ResizeObserver((entries) => {
+      const e = entries[0];
+      const h = e.borderBoxSize?.[0]?.blockSize ?? e.contentRect.height;
+      root.style.setProperty('--header-h', `${h}px`);
+    });
+    ro.observe(header);
+    tracked.__hRO = ro;
+
+    // SPA nav swaps the article DOM — disconnect so we don't leak
+    // observers across pages. astro:page-load on the new page will
+    // re-run this function and attach a fresh observer.
+    document.addEventListener('astro:before-swap', () => {
+      ro.disconnect();
+    }, { once: true });
+  }
+
   attachHeat();
-  document.addEventListener('astro:page-load', attachHeat);
+  trackHeaderHeight();
+  document.addEventListener('astro:page-load', () => {
+    attachHeat();
+    trackHeaderHeight();
+  });
 </script>
 
 <style>
+  /* === Sticky header + banner ===
+     Stack order (front → back):
+       30  header           — solid bg, pinned at top: 5rem (matches column padding-top)
+       20  .banner-wrap     — pinned center-aligned with header; isolated stacking context
+            ├ 0 .cine-banner    — banner content (default in wrap context)
+            ├ 0 ::before        — solid mask above banner (no overlap with .cine-banner — spatially separate)
+            └ 0 ::after         — gradient fade below banner (ditto)
+       (default) sketches list  — scrolls underneath both pinned layers
+       2   .column::before/::after — desktop column edge feathers (BaseLayout); below header/banner
+       9999 .grain               — film-grain overlay (above everything, intentional)
+
+     The pin position is pure CSS — `top: calc(...)` reads --header-h from
+     a ResizeObserver and --banner-h from an inline style on .banner-wrap.
+     No JS scroll listener, no cached offsets. */
+
+  /* --header-offset is the y-coordinate at which the header pins. It
+     defaults to the column's padding-top (5rem on desktop, overridden
+     in portrait to sit below the stage canvas). Setting it equal to
+     the header's natural top makes sticky engage from scrollY=0 — no
+     pre-pin movement. */
+  article {
+    --header-offset: 5rem;
+  }
   header {
+    position: sticky;
+    top: var(--header-offset);
+    z-index: 30;
     margin-bottom: 1.5em;
+    padding-bottom: 0.5em;
   }
   .banner-wrap {
-    margin-bottom: 3.5em;
+    position: sticky;
+    /* Center-line align with header: banner_center = header_center.
+       max() guards against the rare case where header is taller than
+       banner (would otherwise pin above viewport top). */
+    top: max(0px, calc(var(--header-offset) + var(--header-h, 0px) / 2 - var(--banner-h, 0px) / 2));
+    z-index: 20;
+    isolation: isolate;
+    margin-bottom: 2.5em;
   }
+  /* Solid mask above the banner: covers any content that scrolls up
+     into the strip behind the header. Height 100vh so even at extreme
+     viewport heights or rubber-band scroll, the top edge never appears. */
+  .banner-wrap::before {
+    content: '';
+    position: absolute;
+    bottom: 100%;
+    left: -3rem;
+    right: -3rem;
+    height: 100vh;
+    background: var(--bg);
+    pointer-events: none;
+  }
+  /* Gradient fade below the banner: list items reappear softly as they
+     scroll out from under the banner. Negative left/right cancels the
+     column's horizontal padding so the mask is full column width. */
+  .banner-wrap::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: -3rem;
+    right: -3rem;
+    height: 4em;
+    background: linear-gradient(var(--bg), transparent);
+    pointer-events: none;
+  }
+
+  /* Mobile portrait: single-column layout with .stage pinned at top:0
+     (height 30svh, z-index 1). Shift --header-offset so header pins at
+     stage_bottom + column_padding_top — that equals the header's
+     natural y, so it pins from scrollY=0 with zero movement. Banner
+     follows the same center-line math via the var. ::before's 100vh
+     upward extent must be capped to the stage→banner gap, otherwise
+     it would paint over the stage canvas (banner-wrap z=20 sits above
+     stage z=1). */
+  @media (max-width: 860px) and (orientation: portrait) {
+    article {
+      --header-offset: calc(var(--stage-h-mobile, 30svh) + 2rem);
+    }
+    .banner-wrap::before {
+      height: max(0px, calc(2rem + (var(--header-h, 0px) - var(--banner-h, 0px)) / 2));
+    }
+    .banner-wrap::before,
+    .banner-wrap::after {
+      left: -1.5rem;
+      right: -1.5rem;
+    }
+  }
+
   ul.sketches {
     list-style: none;
     padding: 0;
