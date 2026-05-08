@@ -17,17 +17,21 @@ pnpm-debug.log*
 .env
 .env.production
 
-# macOS-specific files
+# OS artifacts
 .DS_Store
+Thumbs.db
 
-# jetbrains setting folder
+# editor / IDE
 .idea/
+.vscode/
 
-# python bytecode cache from scripts/build-fonts.py
-__pycache__/
-
-# local Claude Code config (launch.json is per-machine)
+# Claude Code
 .claude/
+CLAUDE.md
+.claudeignore
+
+# python bytecode
+__pycache__/
 
 # local-only artifacts — exist on disk but not part of the deployed site
 # archive/ holds pre-2023 Hexo drafts (kept for reference, not republished)
@@ -38,6 +42,3 @@ __pycache__/
 archive/
 /data/
 maintenance.html
-
-# Claude Code worktrees
-.claude/worktrees/
