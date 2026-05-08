@@ -17,27 +17,25 @@
  */
 import { K } from './constants';
 import { ScorePlayer } from './player';
+import { renderScore, type ScoreSource } from './render-mei';
 import {
   appendLoopLeader,
   applyLoopSpacing,
   buildAnchors,
-  buildChromeOverlay,
   createStaffLinesLayer,
-  createTempoOverlay,
   injectCopies,
   makeXAtMs,
   measureHeaderWidth,
   measureStaffYs,
   msAtX,
   padAnchors,
-  renderScore,
   setFadeMaskVars,
-  setupRenderLoop,
   sliceSvgIntoTiles,
   stripHeadersFrom,
   stripStaffLinesFrom,
-  type ScoreSource,
-} from './render';
+} from './svg-layout';
+import { buildChromeOverlay, createTempoOverlay } from './chrome-overlay';
+import { setupRenderLoop } from './render-loop';
 import type { MountedScore, Rendered } from './types';
 
 /**

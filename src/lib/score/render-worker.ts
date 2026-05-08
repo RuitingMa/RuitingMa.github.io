@@ -15,7 +15,7 @@
  * extraction + SVG string strip) ends up in the worker chunk.
  */
 /// <reference lib="webworker" />
-import { renderScoreUncached, type ScoreSource } from './render';
+import { renderScoreUncached, type ScoreSource } from './render-mei';
 import type { Rendered } from './types';
 
 interface Req { id: number; src: ScoreSource }
