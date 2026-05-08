@@ -261,7 +261,7 @@ const BANNER_H = 120;
     position: sticky;
     top: var(--header-offset);
     z-index: 30;
-    margin-bottom: 1.5em;
+    margin-bottom: 2em;
     padding-bottom: 0.5em;
   }
   .banner-wrap {
@@ -273,6 +273,13 @@ const BANNER_H = 120;
     z-index: 20;
     isolation: isolate;
     margin-bottom: 2.5em;
+    /* Break out of the column's 3rem horizontal padding so the banner
+       reaches the column's outer edges. When pinned, it lifts up
+       behind the header as a background plate, intentionally wider
+       than the text it backs. The mask/fade pseudo-elements inherit
+       this extended width via left/right: 0. */
+    margin-left: -3rem;
+    margin-right: -3rem;
   }
   /* Solid mask above the banner: covers any content that scrolls up
      into the strip behind the header. Height 100vh so even at extreme
@@ -284,21 +291,22 @@ const BANNER_H = 120;
     content: '';
     position: absolute;
     bottom: calc(100% - 1px);
-    left: -3rem;
-    right: -3rem;
+    left: 0;
+    right: 0;
     height: 100vh;
     background: var(--bg);
     pointer-events: none;
   }
   /* Gradient fade below the banner: list items reappear softly as they
-     scroll out from under the banner. Negative left/right cancels the
-     column's horizontal padding so the mask is full column width. */
+     scroll out from under the banner. banner-wrap is already extended
+     to the column's outer edges via negative margins, so left/right: 0
+     gives full column width. */
   .banner-wrap::after {
     content: '';
     position: absolute;
     top: 100%;
-    left: -3rem;
-    right: -3rem;
+    left: 0;
+    right: 0;
     height: 4em;
     background: linear-gradient(var(--bg), transparent);
     pointer-events: none;
@@ -316,13 +324,13 @@ const BANNER_H = 120;
     article {
       --header-offset: calc(var(--stage-h-mobile, 30svh) + 2rem);
     }
+    /* Mobile column padding is 1.5rem, so match the banner break-out. */
+    .banner-wrap {
+      margin-left: -1.5rem;
+      margin-right: -1.5rem;
+    }
     .banner-wrap::before {
       height: max(0px, calc(2rem + (var(--header-h, 0px) - var(--banner-h, 0px)) / 2));
-    }
-    .banner-wrap::before,
-    .banner-wrap::after {
-      left: -1.5rem;
-      right: -1.5rem;
     }
   }
 
@@ -337,7 +345,6 @@ const BANNER_H = 120;
     letter-spacing: 0.35em;
     font-size: 2.6rem;
     margin: 0;
-    padding-left: 0.35em;
     line-height: 1.2;
   }
   .sub {
@@ -346,7 +353,6 @@ const BANNER_H = 120;
     color: var(--muted);
     letter-spacing: 0.3em;
     margin: 0.9em 0 0;
-    padding-left: 0.3em;
     font-size: 0.72rem;
   }
   ul.sketches li {
