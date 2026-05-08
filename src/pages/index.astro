@@ -38,6 +38,22 @@ const BANNER_H = 120;
 ---
 
 <BaseLayout title="眠海">
+  {/* Force the home page to load at scrollY=0. Astro's ClientRouter
+      restores scroll on every load (incl. refresh) by reading
+      history.state.scrollY at module-init time — history.state survives
+      reloads, so disabling browser scrollRestoration alone isn't
+      enough. This inline classic script runs synchronously during
+      parsing, before any module executes, and zeroes the saved
+      position so ClientRouter's restore is a no-op. The pinned banner
+      + .enter animation + eased pre-pin curve form a fragile dance
+      at scrollY=0; restoring mid-pin races them. */}
+  <script is:inline>
+    if (history.state && (history.state.scrollX || history.state.scrollY)) {
+      history.replaceState({ ...history.state, scrollX: 0, scrollY: 0 }, '');
+    }
+    if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+  </script>
+
   <LobbySketch slot="stage" />
 
   <article class="tint-dune">
@@ -183,6 +199,12 @@ const BANNER_H = 120;
       });
       ro.observe(banner);
       ro.observe(document.documentElement);
+      // Header height feeds banner's pin y via --header-h. Observing
+      // the header catches resize events that move the pin (font swap,
+      // breakpoint) which the banner/documentElement ROs miss because
+      // neither of those elements actually resizes.
+      const header = document.querySelector<HTMLElement>('article > header');
+      if (header) ro.observe(header);
 
       bannerEaseCleanup = () => {
         stopped = true;
@@ -254,11 +276,14 @@ const BANNER_H = 120;
   }
   /* Solid mask above the banner: covers any content that scrolls up
      into the strip behind the header. Height 100vh so even at extreme
-     viewport heights or rubber-band scroll, the top edge never appears. */
+     viewport heights or rubber-band scroll, the top edge never appears.
+     Bottom extends 1px *into* the banner so sub-pixel rendering of the
+     pin position (calc lands on fractional px) can't expose a hairline
+     gap between mask and banner. */
   .banner-wrap::before {
     content: '';
     position: absolute;
-    bottom: 100%;
+    bottom: calc(100% - 1px);
     left: -3rem;
     right: -3rem;
     height: 100vh;

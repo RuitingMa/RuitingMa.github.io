@@ -26,14 +26,34 @@ const {
 } = Astro.props;
 
 const single = sources.length === 1;
+
+// Per-instance id for the SVG blur filter. We need SVG (not CSS
+// `filter: blur()`) because CSS blur samples outside-the-element as
+// transparent black, which produces an alpha-fading edge that leaks
+// the page background. SVG `feGaussianBlur edgeMode="duplicate"`
+// instead samples the nearest edge pixel, so the blur stays opaque
+// up to the element's bounds. The random suffix avoids id collisions
+// when multiple banners coexist on the same page.
+const filterId = `cb-blur-${Math.random().toString(36).slice(2, 8)}`;
 ---
 
 <div
   class:list={['cine-banner', className]}
-  style={`--cb-h: ${height}px; --cb-blur: ${blur}px; --cb-fade: ${fade}ms;`}
+  style={`--cb-h: ${height}px; --cb-filter: url(#${filterId}); --cb-fade: ${fade}ms;`}
   data-cb-fade={fade}
   data-cb-interval={interval}
 >
+  {/* edgeMode="duplicate" extends the source by repeating edge pixels
+      during convolution, killing the alpha-fade edge that CSS
+      `filter: blur()` produces. We leave the filter region at its
+      default (-10%..110%) so the blur output has a halo of slack
+      around the bbox — clipping it tight to 100% caused the bbox
+      edge to fade visibly at sub-pixel positions. */}
+  <svg width="0" height="0" aria-hidden="true" style="position:absolute">
+    <filter id={filterId}>
+      <feGaussianBlur stdDeviation={blur} edgeMode="duplicate" />
+    </filter>
+  </svg>
   <div class="cb-track">
     {single ? (
       <>
@@ -99,16 +119,33 @@ const single = sources.length === 1;
         // here since the video is muted, but defensive).
         a.play().catch(() => {});
 
+        // Single-direction crossfade: `fading` (z-index 1) drops 1→0
+        // while `incoming` (z-index 0) sits behind it at full opacity
+        // the whole time. Cross-fading *both* opacities used to leak
+        // the page bg through at the midpoint (each layer ~0.5 alpha,
+        // composite ~0.75, ~25% darkening). Now only the top layer
+        // animates; the layer beneath is already opaque and just gets
+        // revealed. After the fade lands we swap inline z-index so the
+        // next round repeats with roles reversed.
         function swap() {
-          standby.currentTime = 0;
-          standby.play();
-          standby.style.transition = trans;
-          active.style.transition = trans;
-          standby.style.opacity = '1';
-          active.style.opacity = '0';
-          const tmp = active;
-          active = standby;
-          standby = tmp;
+          const fading = active;
+          const incoming = standby;
+
+          incoming.currentTime = 0;
+          incoming.play();
+          incoming.style.transition = 'none';
+          incoming.style.opacity = '1';
+
+          fading.style.transition = trans;
+          fading.style.opacity = '0';
+
+          setTimeout(() => {
+            incoming.style.zIndex = '1';
+            fading.style.zIndex = '0';
+          }, fadeMs);
+
+          active = incoming;
+          standby = fading;
         }
 
         a.addEventListener('timeupdate', () => {
@@ -133,10 +170,19 @@ const single = sources.length === 1;
         const prev = items[cur];
         cur = (cur + 1) % items.length;
         const next = items[cur];
-        next.style.transition = trans;
-        prev.style.transition = trans;
+        // Same single-direction crossfade as the seamless-loop case:
+        // snap incoming up to opacity 1 behind the outgoing layer (no
+        // transition), fade the outgoing layer out, then swap z-index
+        // once the fade has landed. See comment on `swap()` above for
+        // why fading both layers leaks the page bg through.
+        next.style.transition = 'none';
         next.style.opacity = '1';
+        prev.style.transition = trans;
         prev.style.opacity = '0';
+        setTimeout(() => {
+          next.style.zIndex = '1';
+          prev.style.zIndex = '0';
+        }, fadeMs);
       }, interval);
 
       banner.addEventListener('astro:unmount', () => clearInterval(timer), { once: true });
@@ -152,6 +198,14 @@ const single = sources.length === 1;
     width: 100%;
     height: var(--cb-h);
     overflow: hidden;
+    /* Solid backing matching page bg. Chrome ships an incomplete
+       implementation of `feGaussianBlur edgeMode="duplicate"`, so the
+       blur edge can still alpha-fade and let underlying text bleed
+       through. With the bg here, any leaked alpha resolves to the same
+       color as the page bg behind the whole banner — invisible blend,
+       no text leak. Firefox renders edgeMode correctly, in which case
+       this layer is just dead weight. */
+    background: var(--bg);
   }
 
   .cb-track {
@@ -166,17 +220,16 @@ const single = sources.length === 1;
     width: 100%;
     height: 100%;
     object-fit: cover;
-    filter: blur(var(--cb-blur));
-    transform: scale(1.08);
+    /* SVG filter (declared inline above) keeps the blur opaque up to
+       the element's edges, so we don't need transform: scale(1.08) to
+       hide a fading-to-transparent halo. */
+    filter: var(--cb-filter);
+    z-index: 0;
   }
-
-  /* Four-edge vignette via inset box-shadow. */
-  .cine-banner::after {
-    content: '';
-    position: absolute;
-    inset: 0;
+  /* Initial active layer sits on top so its fade-out reveals the next
+     layer underneath. JS rotates the inline z-index after each fade. */
+  .cb-a,
+  .cb-media[data-index="0"] {
     z-index: 1;
-    pointer-events: none;
-    box-shadow: inset 0 0 30px 8px var(--bg, #0f0f10);
   }
 </style>
