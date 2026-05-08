@@ -38,3 +38,6 @@ __pycache__/
 archive/
 /data/
 maintenance.html
+
+# Claude Code worktrees
+.claude/worktrees/

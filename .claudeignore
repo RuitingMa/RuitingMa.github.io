@@ -1,0 +1,13 @@
+node_modules/
+dist/
+data/MNIST/
+data/makemeahanzi/
+public/models/
+public/fonts/dev/
+scripts/__pycache__/
+*.gz
+*.bin
+*.ttf
+*.woff2
+*.ico
+package-lock.json
