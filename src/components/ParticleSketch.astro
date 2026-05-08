@@ -5,22 +5,16 @@
 
 <script>
   import { mountSketch } from '../lib/sketch-lifecycle';
+  import { setupCanvas2D, resizeCanvas2D } from '../lib/canvas-utils';
 
   mountSketch(() => {
-    const canvas = document.getElementById('flow-field') as HTMLCanvasElement | null;
-    if (!canvas) return;         // not on a page that hosts this sketch
-
-    const ctx = canvas.getContext('2d')!;
-    const dpr = window.devicePixelRatio || 1;
+    const setup = setupCanvas2D('flow-field', Infinity);
+    if (!setup) return;
+    const { canvas, ctx, dpr } = setup;
     let w = 0, h = 0;
 
     function resize() {
-      const rect = canvas!.getBoundingClientRect();
-      w = rect.width;
-      h = rect.height;
-      canvas!.width = w * dpr;
-      canvas!.height = h * dpr;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ({ w, h } = resizeCanvas2D(canvas, ctx, dpr));
       ctx.fillStyle = '#0f0f10';
       ctx.fillRect(0, 0, w, h);
     }
