@@ -62,29 +62,25 @@ const BANNER_H = 120;
       <p class="sub enter" style="--i: 1;">SUNKEN KEEP / 保持沉没</p>
     </header>
 
-    {/* No `.enter` class on the banner-wrap. The fade-in is purely
-        cosmetic and its `animation-fill-mode: both` initial frame
-        (opacity: 0) can strand the banner invisible if the timeline
-        ever gets paused or stalls — view transitions on SPA nav back
-        from a sketch can do that intermittently, even after init's
-        classList.remove('enter') would normally fire. Skipping the
-        animation entirely on the banner removes the race; h1 / .sub /
-        list items still get their .enter staggered reveal.
+    {/* No `.enter` class on the banner-wrap. The fade-in's initial
+        keyframe (opacity: 0 with animation-fill-mode: both) can strand
+        the banner invisible if the timeline ever pauses or stalls —
+        view transitions on SPA nav back from a sketch can do that
+        intermittently, even with init's classList.remove('enter')
+        firing synchronously. Dropping the class entirely removes the
+        race; h1 / .sub / list items still get their staggered reveal.
 
-        transition:name lifts the banner out of the column's view
-        transition. The column has its own name and morphs between
-        OLD/NEW bboxes — when scrolled, OLD column is much taller than
-        NEW (sketch pages have less content), so its descendants get
-        positioned by *relative offset* during the morph. A pinned
-        banner at scrollY=1000 lives at ~21% down the OLD column;
-        scaled into NEW's ~1500px column it lands at viewport y=315 —
-        the "big downward drop + fade" the user saw on nav. With its
-        own transition name the banner gets an independent pseudo
-        anchored to its current bbox, so it just fades from where it
-        sits. The further scrolled (= higher % in OLD column), the
-        bigger the drop without this — explains why amplitude tracks
-        scroll position. */}
-    <div class="banner-wrap" style={`--banner-h: ${BANNER_H}px;`} transition:name="banner">
+        Also no transition:name on banner-wrap. With a name, the
+        banner becomes its own view-transition pseudo, lifted out of
+        the root snapshot. During the cross-fade that means the
+        banner's pseudo (50% alpha mid-fade) and the root pseudo (also
+        50%, with the banner-region now showing list items beneath
+        because banner was extracted) overlap — you see the list
+        items through the half-transparent banner. Keeping the banner
+        in the root snapshot bakes the layering into a single flat
+        image, so banner / header text / list pixels fade together
+        as one unit and nothing peeks through. */}
+    <div class="banner-wrap" style={`--banner-h: ${BANNER_H}px;`}>
       <CineBanner
         sources={["/banner/lobby/lamp.mp4"]}
         height={BANNER_H}
