@@ -95,10 +95,24 @@ const filterId = `cb-blur-${Math.random().toString(36).slice(2, 8)}`;
 </div>
 
 <script>
+  const cbReady = new WeakSet<Element>();
+
+  function ensurePlay(video: HTMLVideoElement) {
+    const attempt = () => video.play().catch(() => {});
+    if (video.readyState >= 2) {
+      attempt();
+    } else {
+      video.addEventListener('loadeddata', attempt, { once: true });
+    }
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && video.paused) attempt();
+    });
+  }
+
   function initBanners() {
     for (const banner of document.querySelectorAll<HTMLElement>('.cine-banner')) {
-      if ((banner as any).__cbInit) continue;
-      (banner as any).__cbInit = true;
+      if (cbReady.has(banner)) continue;
+      cbReady.add(banner);
 
       const fadeMs = Number(banner.dataset.cbFade) || 5000;
       const fadeSec = fadeMs / 1000;
@@ -111,22 +125,8 @@ const filterId = `cb-blur-${Math.random().toString(36).slice(2, 8)}`;
         let active = a;
         let standby = b;
 
-        // The `autoplay` HTML attribute fires reliably on first load
-        // but not on SPA-rendered video — Astro's ClientRouter swaps
-        // DOM after the parser's autoplay heuristic has run, leaving
-        // the new <video> paused on a blank frame. Kick it off
-        // explicitly. Catch is for autoplay-policy rejections (rare
-        // here since the video is muted, but defensive).
-        a.play().catch(() => {});
+        ensurePlay(a);
 
-        // Single-direction crossfade: `fading` (z-index 1) drops 1→0
-        // while `incoming` (z-index 0) sits behind it at full opacity
-        // the whole time. Cross-fading *both* opacities used to leak
-        // the page bg through at the midpoint (each layer ~0.5 alpha,
-        // composite ~0.75, ~25% darkening). Now only the top layer
-        // animates; the layer beneath is already opaque and just gets
-        // revealed. After the fade lands we swap inline z-index so the
-        // next round repeats with roles reversed.
         function swap() {
           const fading = active;
           const incoming = standby;
@@ -170,11 +170,6 @@ const filterId = `cb-blur-${Math.random().toString(36).slice(2, 8)}`;
         const prev = items[cur];
         cur = (cur + 1) % items.length;
         const next = items[cur];
-        // Same single-direction crossfade as the seamless-loop case:
-        // snap incoming up to opacity 1 behind the outgoing layer (no
-        // transition), fade the outgoing layer out, then swap z-index
-        // once the fade has landed. See comment on `swap()` above for
-        // why fading both layers leaks the page bg through.
         next.style.transition = 'none';
         next.style.opacity = '1';
         prev.style.transition = trans;

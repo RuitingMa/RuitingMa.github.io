@@ -124,11 +124,13 @@ const BANNER_H = 120;
   // crossing, viewport resize, even mobile chrome show/hide. No scroll
   // listener, no cached offsets — that's what made the previous version
   // brittle.
+  const headerTracked = new WeakSet<Element>();
+
   function trackHeaderHeight() {
     const header = document.querySelector<HTMLElement>('article > header');
     if (!header) return;
-    const tracked = header as HTMLElement & { __hRO?: ResizeObserver };
-    if (tracked.__hRO) return;
+    if (headerTracked.has(header)) return;
+    headerTracked.add(header);
 
     const root = document.documentElement;
     const ro = new ResizeObserver((entries) => {
@@ -137,11 +139,7 @@ const BANNER_H = 120;
       root.style.setProperty('--header-h', `${h}px`);
     });
     ro.observe(header);
-    tracked.__hRO = ro;
 
-    // SPA nav swaps the article DOM — disconnect so we don't leak
-    // observers across pages. astro:page-load on the new page will
-    // re-run this function and attach a fresh observer.
     document.addEventListener('astro:before-swap', () => {
       ro.disconnect();
     }, { once: true });
@@ -158,113 +156,95 @@ const BANNER_H = 120;
   // and sticky's actual is naturalY - S, so the delta we apply via
   // translate is pinDist * (t - p) where t = S/pinDist. Outside the
   // pre-pin range the delta is 0 (sticky alone is correct).
-  let bannerEaseCleanup: (() => void) | null = null;
+  let easeAC: AbortController | null = null;
 
   function bannerEase() {
-    bannerEaseCleanup?.();
-    bannerEaseCleanup = null;
+    if (easeAC) { easeAC.abort(); easeAC = null; }
 
     const banner = document.querySelector<HTMLElement>('.banner-wrap');
     if (!banner) return;
     if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 
-    const init = () => {
-      // Same .enter-class trick as before: animation-fill-mode: both
-      // would lock translateY(0) over our inline transform forever.
-      banner.classList.remove('enter');
+    const ac = new AbortController();
+    easeAC = ac;
 
-      let pinDist = 0;
-      let raf = 0;
-      let stopped = false;
+    banner.classList.remove('enter');
+    (banner as any).__cbAnim?.cancel();
+    if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      const anim = banner.animate(
+        [{ opacity: 0 }, { opacity: 1 }],
+        { duration: 1800, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' }
+      );
+      (banner as any).__cbAnim = anim;
+      setTimeout(() => { if (anim.playState !== 'finished') anim.cancel(); }, 2500);
+    }
 
-      const measure = () => {
-        const pinY = parseFloat(getComputedStyle(banner).top) || 0;
-        let natY = 0;
-        let el: HTMLElement | null = banner;
-        while (el) {
-          natY += el.offsetTop;
-          el = el.offsetParent as HTMLElement | null;
-        }
-        pinDist = Math.max(0, natY - pinY);
-      };
+    let pinDist = 0;
+    let raf = 0;
 
-      // Cached once at init: the title participates in the same scroll
-      // curve via a CSS variable that drives a mask-image gradient (see
-      // h1's CSS rule). Setting it on the element directly keeps the
-      // var local — no global pollution.
-      const titleEl = document.querySelector<HTMLElement>('article > header > h1');
-
-      const apply = () => {
-        if (stopped) return;
-        const s = window.scrollY;
-        let progress = 0;
-        if (pinDist <= 0 || s <= 0) {
-          banner.style.transform = '';
-        } else if (s >= pinDist) {
-          banner.style.transform = '';
-          progress = 1;
-        } else {
-          const t = s / pinDist;
-          progress = t * t * (3 - 2 * t);
-          banner.style.transform = `translate3d(0, ${pinDist * (t - progress)}px, 0)`;
-        }
-        if (titleEl) titleEl.style.setProperty('--p', String(progress));
-        raf = 0;
-      };
-
-      const onScroll = () => {
-        if (!raf && !stopped) raf = requestAnimationFrame(apply);
-      };
-
-      measure();
-      apply();
-      window.addEventListener('scroll', onScroll, { passive: true });
-
-      // Layout shifts (font swap, header height change, breakpoint) move
-      // the natural and pin positions; recompute and re-apply.
-      const ro = new ResizeObserver(() => {
-        measure();
-        apply();
-      });
-      ro.observe(banner);
-      ro.observe(document.documentElement);
-      // Header height feeds banner's pin y via --header-h. Observing
-      // the header catches resize events that move the pin (font swap,
-      // breakpoint) which the banner/documentElement ROs miss because
-      // neither of those elements actually resizes.
-      const header = document.querySelector<HTMLElement>('article > header');
-      if (header) ro.observe(header);
-
-      bannerEaseCleanup = () => {
-        stopped = true;
-        if (raf) cancelAnimationFrame(raf);
-        window.removeEventListener('scroll', onScroll);
-        ro.disconnect();
-        banner.style.transform = '';
-      };
+    const measure = () => {
+      const pinY = parseFloat(getComputedStyle(banner).top) || 0;
+      let natY = 0;
+      let el: HTMLElement | null = banner;
+      while (el) {
+        natY += el.offsetTop;
+        el = el.offsetParent as HTMLElement | null;
+      }
+      pinDist = Math.max(0, natY - pinY);
     };
 
-    // Run init immediately rather than waiting on the .enter
-    // animation's `finished` Promise. The wait was originally there to
-    // sidestep animation-fill-mode locking transform after completion,
-    // but init's first line removes the .enter class which cancels the
-    // animation regardless of state — same effect, no race. The wait
-    // could leave the banner invisible if the animation never reaches
-    // its end frame (paused tab during SPA nav back, view transition
-    // suspending the timeline, etc.), since opacity: 0 from .enter's
-    // initial keyframe is retained while finished hasn't resolved.
-    // Trade-off: banner skips the fade-in entry; h1 / sub / list still
-    // get theirs from .enter on those elements.
-    init();
+    const titleEl = document.querySelector<HTMLElement>('article > header > h1');
+
+    const apply = () => {
+      if (ac.signal.aborted) return;
+      const s = window.scrollY;
+      let progress = 0;
+      if (pinDist <= 0 || s <= 0) {
+        banner.style.transform = '';
+      } else if (s >= pinDist) {
+        banner.style.transform = '';
+        progress = 1;
+      } else {
+        const t = s / pinDist;
+        progress = t * t * (3 - 2 * t);
+        banner.style.transform = `translate3d(0, ${pinDist * (t - progress)}px, 0)`;
+      }
+      if (titleEl) titleEl.style.setProperty('--p', String(progress));
+      raf = 0;
+    };
+
+    const onScroll = () => {
+      if (!raf && !ac.signal.aborted) raf = requestAnimationFrame(apply);
+    };
+
+    measure();
+    apply();
+    window.addEventListener('scroll', onScroll, { passive: true, signal: ac.signal });
+
+    const ro = new ResizeObserver(() => {
+      measure();
+      apply();
+    });
+    ro.observe(banner);
+    ro.observe(document.documentElement);
+    const header = document.querySelector<HTMLElement>('article > header');
+    if (header) ro.observe(header);
+
+    document.addEventListener('astro:before-swap', () => {
+      ac.abort();
+      ro.disconnect();
+      banner.style.transform = '';
+    }, { once: true, signal: ac.signal });
   }
 
-  attachHeat();
-  trackHeaderHeight();
-  bannerEase();
   document.addEventListener('astro:page-load', () => {
     attachHeat();
     trackHeaderHeight();
     bannerEase();
+    if (location.pathname === '/') {
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+    }
   });
 </script>
 
