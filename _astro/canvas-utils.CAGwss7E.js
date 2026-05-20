@@ -1,0 +1,1 @@
+function c(n,o=1.5){const t=document.getElementById(n);if(!t)return null;const e=t.getContext("2d");if(!e)return null;const i=Math.min(window.devicePixelRatio||1,o);return{canvas:t,ctx:e,dpr:i}}function r(n,o,t){const e=n.getBoundingClientRect(),i=e.width,s=e.height;return n.width=i*t,n.height=s*t,o.setTransform(t,0,0,t,0,0),{w:i,h:s}}export{r,c as s};

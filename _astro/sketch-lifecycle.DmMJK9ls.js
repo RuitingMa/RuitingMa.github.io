@@ -1,0 +1,1 @@
+function a(o){let t=null;function e(){if(t)return;const n=o();typeof n=="function"&&(t=n,document.addEventListener("astro:before-swap",()=>{t?.(),t=null},{once:!0}))}e(),document.addEventListener("astro:page-load",e)}export{a as m};
